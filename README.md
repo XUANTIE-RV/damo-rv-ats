@@ -9,6 +9,7 @@
 
 ```
 damo-rv-ats/
+├── Makefile                    # 顶层构建入口（自动遍历所有扩展子目录）
 ├── README.md                   # 项目说明文档
 ├── LICENSE                     # 开源许可证
 ├── .clang-format               # 代码格式化配置
@@ -110,7 +111,9 @@ damo-rv-ats/
 
 ## 环境依赖
 
-- **交叉编译工具链**：`riscv64-unknown-linux-gnu-gcc` / `riscv64-unknown-linux-gnu-g++`
+- **交叉编译工具链**：
+  - GCC（默认）：`riscv64-unknown-linux-gnu-gcc` / `riscv64-unknown-linux-gnu-g++`
+  - Clang（可选）：`riscv64-unknown-linux-gnu-clang` / `riscv64-unknown-linux-gnu-clang++`
 - **C++ 标准**：C++17
 - **QEMU**：`qemu-riscv64`（用于模拟器运行）
 - **目标架构**：
@@ -125,19 +128,31 @@ damo-rv-ats/
 ### 编译
 
 ```bash
-# 编译 V 扩展测试用例
+# 在项目顶层编译所有扩展测试用例（vx, zvbb, zvbc）
+make
+
+# 使用 Clang 编译所有扩展测试用例
+make COMPILER=clang
+
+# 仅编译指定扩展
+make EXTENSIONS="vx zvbb"
+
+# 编译单个扩展测试用例
 cd vx && make
 
-# 编译 Zvbb 扩展测试用例
-cd zvbb && make
-
-# 编译 Zvbc 扩展测试用例
-cd zvbc && make
+# 使用 Clang 编译单个扩展
+cd vx && make COMPILER=clang
 ```
 
 ### 在 QEMU 上运行
 
 ```bash
+# 在项目顶层运行所有扩展的测试用例
+make qemu
+
+# 使用 Clang 编译并在 QEMU 上运行
+make COMPILER=clang qemu
+
 # 运行 vx 目录下所有测试用例
 cd vx && make qemu
 

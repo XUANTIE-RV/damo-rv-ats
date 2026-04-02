@@ -6,11 +6,24 @@ endif
 
 UNAME_M := $(shell uname -m)
 
+COMPILER ?= gcc
+
+ifeq ($(COMPILER),clang)
+CC := riscv64-unknown-linux-gnu-clang
+CXX := riscv64-unknown-linux-gnu-clang++
+else
 CC := riscv64-unknown-linux-gnu-gcc
 CXX := riscv64-unknown-linux-gnu-g++
+endif
 
-CFLAGS :=  -march=rv64gcv -static -g -I../common -I../thirdparty -std=c++17
-CXXFLAGS :=  -march=rv64gcv -mabi=${abi} -static -g -I../common -I../thirdparty -std=c++17
+CFLAGS :=  -march=rv64gcv -static -Os -ffunction-sections -fdata-sections -I../common -I../thirdparty -std=c++17
+CXXFLAGS :=  -march=rv64gcv -mabi=${abi} -static -Os -ffunction-sections -fdata-sections -I../common -I../thirdparty -std=c++17
+LDFLAGS := -Wl,--gc-sections
+
+ifdef DEBUG
+CFLAGS += -O0 -g
+CXXFLAGS += -O0 -g
+endif
 
 
 SRC_C := $(wildcard *.c)
@@ -27,7 +40,7 @@ TEST := $(patsubst %.cpp, %.test, $(SRC_CPP))
 all: $(EXE_CPP)
 
 %.elf: %.cpp
-		$(CXX) $(CXXFLAGS) -o $@ $<
+		$(CXX) $(CXXFLAGS) $(LDFLAGS) -o $@ $<
 
 qemu: $(EXE_CPP) $(QEMU)
 
