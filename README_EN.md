@@ -1,3 +1,5 @@
+**[中文](README.md) | English**
+
 # DAMO-RV-ATS
 
 `DAMO-RV-ATS` is A RISC-V instruction compatibility test framework for automated regression verification and fuzzing testing of RISC-V  ISA extension instructions. Currently covers **V extension** (RVV 1.0), **Zvbb extension** (vector bit manipulation), and **Zvbc extension** (vector carryless multiplication), with a total of **200** instruction test cases.
