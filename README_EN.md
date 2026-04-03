@@ -1,3 +1,5 @@
+**[中文](README.md) | English**
+
 # DAMO-RV-ATS
 
 `DAMO-RV-ATS` is A RISC-V instruction compatibility test framework for automated regression verification and fuzzing testing of RISC-V  ISA extension instructions. Currently covers **V extension** (RVV 1.0), **Zvbb extension** (vector bit manipulation), and **Zvbc extension** (vector carryless multiplication), with a total of **200** instruction test cases.
@@ -8,6 +10,7 @@
 
 ```
 damo-rv-ats/
+├── Makefile                    # Top-level build entry (iterates over all extension subdirectories)
 ├── README.md                   # Project documentation (Chinese)
 ├── README_EN.md                # Project documentation (English)
 ├── LICENSE                     # Open source license
@@ -110,7 +113,9 @@ Each instruction covers **8/16/32/64-bit** four element widths (SEW) by default.
 
 ## Prerequisites
 
-- **Cross-compilation Toolchain**: `riscv64-unknown-linux-gnu-gcc` / `riscv64-unknown-linux-gnu-g++`
+- **Cross-compilation Toolchain**:
+  - GCC (default): `riscv64-unknown-linux-gnu-gcc` / `riscv64-unknown-linux-gnu-g++`
+  - Clang (optional): `riscv64-unknown-linux-gnu-clang` / `riscv64-unknown-linux-gnu-clang++`
 - **C++ Standard**: C++17
 - **QEMU**: `qemu-riscv64` (for emulator execution)
 - **Target Architecture**:
@@ -125,19 +130,31 @@ Each instruction covers **8/16/32/64-bit** four element widths (SEW) by default.
 ### Compile
 
 ```bash
-# Compile V extension test cases
+# Build all extension test cases from the project root (vx, zvbb, zvbc)
+make
+
+# Build all extensions using Clang
+make COMPILER=clang
+
+# Build only specific extensions
+make EXTENSIONS="vx zvbb"
+
+# Build a single extension
 cd vx && make
 
-# Compile Zvbb extension test cases
-cd zvbb && make
-
-# Compile Zvbc extension test cases
-cd zvbc && make
+# Build a single extension using Clang
+cd vx && make COMPILER=clang
 ```
 
 ### Run on QEMU
 
 ```bash
+# Run all extension test cases from the project root
+make qemu
+
+# Build with Clang and run on QEMU
+make COMPILER=clang qemu
+
 # Run all test cases in the vx directory
 cd vx && make qemu
 
