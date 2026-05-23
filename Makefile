@@ -1,4 +1,4 @@
-EXTENSIONS ?= vx zvbb zvbc
+EXTENSIONS ?= vx zvbb zvbc zvkg zvkned zvknh zvksed zvksh
 
 # Default target
 all:
