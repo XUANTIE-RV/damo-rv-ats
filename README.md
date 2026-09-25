@@ -265,3 +265,7 @@ qemu-riscv64 vadd.vv.elf --runtime 10000 --early-stop --log-level INFO
   - `is_no_overlap` — 寄存器组重叠检查（含 Section 5.2 三条规则）
 - **上下文保存/恢复**：`save_context` / `restore_context` — 在 JIT 执行前后保存和恢复通用寄存器状态
 - **位操作辅助**：`ror` / `rol` / `brev` — 循环右移、循环左移、位反转等运算（用于 Zvbb 黄金模型）
+
+## Related Resources
+
+* XuanTie RISC-V development resources and tools: [XuanTie Resource Center](https://www.xrvm.cn/community/download)
