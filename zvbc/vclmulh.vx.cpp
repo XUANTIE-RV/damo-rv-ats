@@ -55,12 +55,19 @@ int run_self_result(c_data &cur_data)
 	int rs1 = cur_data.map_reg_index["rs1"];
 	int vd = cur_data.map_reg_index["vd"];
 	int SEW = sizeof(Ts2) * 8;
-	int vlmax = vlen / sizeof(Td);
 
 	Ts2 *vs2_data = static_cast<Ts2 *>(
 		cur_data.map_preinst_typed_value["vs2"].get());
 	Ts1 *rs1_data = static_cast<Ts1 *>(
 		cur_data.map_preinst_typed_value["rs1"].get());
+	Td rs1_val = static_cast<Td>(*rs1_data);
+#if __riscv_xlen == 32
+	if (sizeof(Td) > 4) {
+		int32_t lo = static_cast<int32_t>(
+			*reinterpret_cast<uint32_t *>(rs1_data));
+		rs1_val = static_cast<Td>(static_cast<int64_t>(lo));
+	}
+#endif
 
 	uint8_t *vm_data;
 	if (!vm_bit) {
@@ -77,7 +84,7 @@ int run_self_result(c_data &cur_data)
 	for (int j = 0; j < vector_cfg.len; j++) {
 		int row = j / 8;
 		int col = j % 8;
-		int vindex = vd + (j / vlmax);
+
 		if (j < vector_cfg.vstart ||
 		    (!vm_bit && !(vm_data[row] & (1ull << col)))) {
 			continue;
@@ -85,7 +92,7 @@ int run_self_result(c_data &cur_data)
 
 		// Perform carry-less multiplication high: rs1 * vs2[j]
 		selfcheck_data[j] = static_cast<Td>(
-			clmulh(static_cast<uint64_t>(*rs1_data),
+			clmulh(static_cast<uint64_t>(rs1_val),
 			       static_cast<uint64_t>(vs2_data[j])));
 	}
 	return 0;
@@ -101,7 +108,8 @@ int per_run(int it, c_cfg &cur_cfg, c_data &cur_data)
 		cur_data.register_type_with_random<Td>("vd", vector_cfg.len);
 		cur_data.register_type_with_random<Ts1>("rs1", 1);
 		if (cur_data.map_reg_index["vm"] == 0)
-			cur_data.register_type_with_random<uint8_t>("vm", vlen);
+			cur_data.register_type_with_random<uint8_t>("vm",
+								    vlenb);
 		cur_data.set_value_to_cfg(cur_cfg);
 		cur_cfg.DESC = cur_data.get_DESC_from_inst(vop_inst_fields,
 							   vector_cfg.inst);
@@ -117,11 +125,12 @@ int per_run(int it, c_cfg &cur_cfg, c_data &cur_data)
 	std::vector<uint32_t> insts;
 
 	save_context(insts);
+	vzero_all(insts);
 
 	load_multi_vector<Td, Ts2, uint8_t>(
 		insts, cur_data, { "vd", "vs2", "vm" },
 		{ vector_cfg.lmul, vector_cfg.lmul, lmul_m1 },
-		{ vector_cfg.len, vector_cfg.len, vlen });
+		{ vector_cfg.len, vector_cfg.len, vlenb });
 
 	load_multi_int<Ts1>(insts, cur_data, { "rs1" });
 
@@ -130,7 +139,7 @@ int per_run(int it, c_cfg &cur_cfg, c_data &cur_data)
 	store_multi_preinst_vector<Td, Ts2, uint8_t>(
 		insts, cur_data, { "vd", "vs2", "vm" },
 		{ vector_cfg.lmul, vector_cfg.lmul, lmul_m1 },
-		{ vector_cfg.len, vector_cfg.len, vlen });
+		{ vector_cfg.len, vector_cfg.len, vlenb });
 
 	vsetvli_lmul_sew(insts, vector_cfg.lmul, vector_cfg.sew,
 			 vector_cfg.len);
@@ -155,7 +164,7 @@ int per_run(int it, c_cfg &cur_cfg, c_data &cur_data)
 
 	save_multi_preinst_value_to_common<Td, Ts2, uint8_t>(
 		cur_data, { "rs1", "vd", "vs2", "vm" },
-		{ 1, vector_cfg.len, vector_cfg.len, vlen });
+		{ 1, vector_cfg.len, vector_cfg.len, vlenb });
 
 	run_self_result<Ts1, Ts2, Td>(cur_data);
 
@@ -204,7 +213,7 @@ int main(int argc, char *argv[])
 				it, cur_cfg, cur_data);
 			break;
 		case sew_e32:
-			// Zvbc32e not include 
+			// Zvbc32e not include
 			// has_error = per_run<uint32_t, uint32_t, uint32_t>(
 			//	it, cur_cfg, cur_data);
 			break;

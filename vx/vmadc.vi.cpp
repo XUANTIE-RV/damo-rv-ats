@@ -81,7 +81,7 @@ template <typename Ts2> int run_self_result(c_data &cur_data)
 
 	uint8_t *uncheck_data = static_cast<uint8_t *>(
 		cur_data.map_afterinst_typed_value["vd"].get());
-	for (int j = vector_cfg.len; j < vlen * 8; j++) {
+	for (int j = vector_cfg.len; j < vlenb * 8; j++) {
 		int byte_idx = j / 8;
 		int bit_idx = j % 8;
 		selfcheck_data[byte_idx] |= uncheck_data[byte_idx] &
@@ -97,7 +97,7 @@ template <typename Ts2> int per_run(int it, c_cfg &cur_cfg, c_data &cur_data)
 
 	if (random_mode) {
 		cur_data.register_type_with_random<Ts2>("vs2", vector_cfg.len);
-		cur_data.register_type_with_random<uint8_t>("vd", vlen);
+		cur_data.register_type_with_random<uint8_t>("vd", vlenb);
 		cur_data.set_value_to_cfg(cur_cfg);
 		cur_cfg.DESC = cur_data.get_DESC_from_inst(vop_inst_fields,
 							   vector_cfg.inst);
@@ -113,15 +113,16 @@ template <typename Ts2> int per_run(int it, c_cfg &cur_cfg, c_data &cur_data)
 	std::vector<uint32_t> insts;
 
 	save_context(insts);
+	vzero_all(insts);
 
 	load_multi_vector<uint8_t, Ts2>(insts, cur_data, { "vd", "vs2" },
 					{ lmul_m1, vector_cfg.lmul },
-					{ vlen, vector_cfg.len });
+					{ vlenb, vector_cfg.len });
 
 	store_multi_preinst_vector<uint8_t, Ts2>(insts, cur_data,
 						 { "vd", "vs2" },
 						 { lmul_m1, vector_cfg.lmul },
-						 { vlen, vector_cfg.len });
+						 { vlenb, vector_cfg.len });
 
 	vsetvli_lmul_sew(insts, vector_cfg.lmul, vector_cfg.sew,
 			 vector_cfg.len);
@@ -131,7 +132,7 @@ template <typename Ts2> int per_run(int it, c_cfg &cur_cfg, c_data &cur_data)
 	insts.push_back(vector_cfg.inst);
 
 	store_multi_afterinst_vector<uint8_t>(insts, cur_data, { "vd" },
-					      { lmul_m1 }, { vlen });
+					      { lmul_m1 }, { vlenb });
 
 	restore_context(insts);
 
@@ -142,11 +143,12 @@ template <typename Ts2> int per_run(int it, c_cfg &cur_cfg, c_data &cur_data)
 		return has_illegal;
 
 	save_multi_preinst_value_to_common<uint8_t, Ts2>(
-		cur_data, { "vd", "vs2" }, { vlen, vector_cfg.len });
+		cur_data, { "vd", "vs2" }, { vlenb, vector_cfg.len });
 
 	run_self_result<Ts2>(cur_data);
 
-	int is_error = check_multi_error<uint8_t>(cur_data, { "vd" }, { vlen });
+	int is_error =
+		check_multi_error<uint8_t>(cur_data, { "vd" }, { vlenb });
 
 	if (is_error) {
 		DEBUG << std::hex << json(cur_data).dump(4) << std::endl;

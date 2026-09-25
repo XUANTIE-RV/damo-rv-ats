@@ -30,7 +30,6 @@ template <typename Td> int run_self_result(c_data &cur_data)
 {
 	int vd = cur_data.map_reg_index["vd"];
 	int SEW = sizeof(Td) * 8;
-	int vlmax = vlen / sizeof(Td);
 
 	uint64_t *rs1_data = static_cast<uint64_t *>(
 		cur_data.map_preinst_typed_value["rs1"].get());
@@ -74,6 +73,7 @@ template <typename Td> int per_run(int it, c_cfg &cur_cfg, c_data &cur_data)
 	std::vector<uint32_t> insts;
 
 	save_context(insts);
+	vzero_all(insts);
 
 	load_multi_vector<Td>(insts, cur_data, { "vd" }, { vector_cfg.lmul },
 			      { vector_cfg.len });

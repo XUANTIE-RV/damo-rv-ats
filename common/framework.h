@@ -32,6 +32,7 @@
 
 #include "../thirdparty/json.hpp"
 #include "../thirdparty/argparse.hpp"
+#include "baremetal_gen.h"
 
 using json = nlohmann::json;
 
@@ -368,7 +369,7 @@ void signal_handler(int signal_number, siginfo_t *si, void *uc)
 {
 	global_signal_cnt = 1;
 
-	uint64_t pc = ((ucontext_t *)uc)->uc_mcontext.__gregs[0];
+	unsigned long pc = ((ucontext_t *)uc)->uc_mcontext.__gregs[0];
 	uint32_t inst = *(uint32_t *)pc;
 	INFO << "Illegal instruction detected at PC 0x" << std::hex << pc
 	     << ", encoding 0x" << inst << std::endl;
@@ -387,7 +388,7 @@ void set_signal_handler()
 
 	sa.sa_sigaction = signal_handler;
 	sigemptyset(&sa.sa_mask);
-	sa.sa_flags = 0;
+	sa.sa_flags = SA_SIGINFO;
 
 	if (sigaction(SIGILL, &sa, NULL) == -1) {
 		throw std::runtime_error("Failed to set signal handler");
@@ -414,6 +415,7 @@ int run_times = 1000;
 unsigned long seed = 0;
 bool record_mode = false;
 bool early_stop = false;
+bool baremetal_mode = false;
 float illegal_percent = -1;
 int max_retry = 10;
 
@@ -449,7 +451,7 @@ void init_program(int argc, char *argv[])
 		});
 
 	parser.add_argument("--runtime", "-r")
-		.help("Number of iterations")
+		.help("Number of iterations. In data mode without this flag, all cases are executed")
 		.default_value(1000)
 		.scan<'i', int>();
 	parser.add_argument("--early-stop", "-e")
@@ -476,6 +478,10 @@ void init_program(int argc, char *argv[])
 		.help("Switch to Fixed mode (default is Fuzzing mode). Read instruction form data file")
 		.default_value(false)
 		.implicit_value(true);
+	parser.add_argument("--baremetal")
+		.help("Generate baremetal assembly code (.baremetal.S and .baremetal.ld) alongside data file")
+		.default_value(false)
+		.implicit_value(true);
 
 	try {
 		parser.parse_args(argc, argv);
@@ -492,6 +498,7 @@ void init_program(int argc, char *argv[])
 	illegal_percent = parser.get<float>("--illegal-percent");
 	max_retry = parser.get<int>("--max-retry");
 	random_mode = !parser.get<bool>("--data");
+	baremetal_mode = parser.get<bool>("--baremetal");
 
 	INFO << "Random mode: " << random_mode << std::endl;
 	INFO << "Number of iterations: " << run_times << std::endl;
@@ -505,6 +512,27 @@ void init_program(int argc, char *argv[])
 
 	if (!random_mode) {
 		global_cfg = c_cfg::from_json_file(datafile);
+
+		/* In data replay mode, adjust run_times based on actual data size:
+		 * - If --runtime was not explicitly specified, run all cases in the data file
+		 * - If --runtime was explicitly specified, run the minimum of runtime and data size */
+		if (!parser.is_used("--runtime")) {
+			run_times = static_cast<int>(global_cfg.size());
+		} else {
+			run_times = std::min(
+				run_times, static_cast<int>(global_cfg.size()));
+		}
+		INFO << "Data mode: adjusted iterations to " << run_times
+		     << " (data file contains " << global_cfg.size()
+		     << " cases)" << std::endl;
+	}
+
+	/* Initialize baremetal generator */
+	if (baremetal_mode) {
+		global_baremetal_gen.set_enabled(true);
+		global_baremetal_gen.set_test_name(filename);
+		/* Baremetal mode implies record mode */
+		record_mode = true;
 	}
 
 	set_signal_handler();
@@ -513,15 +541,11 @@ void init_program(int argc, char *argv[])
 /* Generate a uniformly distributed random value of the specified integral type T. */
 template <typename T> T get_rand()
 {
-	if constexpr (std::is_same_v<T, int8_t> || std::is_same_v<T, uint8_t> ||
-		      std::is_same_v<T, int16_t> ||
-		      std::is_same_v<T, uint16_t> ||
-		      std::is_same_v<T, int32_t> ||
-		      std::is_same_v<T, uint32_t> ||
-		      std::is_same_v<T, int64_t> ||
-		      std::is_same_v<T, uint64_t>) {
+	if constexpr (std::is_integral_v<T>) {
 		std::uniform_int_distribution<T> dist;
 		return dist(global_rng);
+	} else if constexpr (!std::is_fundamental_v<T>) {
+		return T::get_class_rand();
 	} else {
 		throw std::runtime_error("Unsupported type in get_rand<T>");
 	}
@@ -534,6 +558,9 @@ template <typename T>
 T get_rand_bound(T minm = std::numeric_limits<T>::min(),
 		 T maxm = std::numeric_limits<T>::max())
 {
+	if constexpr (!std::is_fundamental_v<T>) {
+		return T::get_class_rand_bound(minm, maxm);
+	}
 	if (minm > maxm) {
 		std::swap(minm, maxm);
 	}
@@ -632,6 +659,9 @@ void end_program(int it)
 	if (random_mode && record_mode) {
 		c_cfg::to_json_file(datafile, global_cfg);
 	}
+	if (baremetal_mode) {
+		global_baremetal_gen.generate(filename);
+	}
 	dataFile.close();
 }
 
@@ -644,9 +674,8 @@ template <typename T> SafeVoidPtr make_aligned_array(const std::vector<T> &data)
 		return nullptr;
 
 	size_t bytes = data.size() * sizeof(T);
-	size_t align = (alignof(T) < 16) ? 16 : alignof(T);
 
-	void *raw = std::aligned_alloc(align, bytes);
+	void *raw = malloc(bytes);
 	if (!raw)
 		throw std::bad_alloc();
 	std::memcpy(raw, data.data(), bytes);
@@ -659,11 +688,29 @@ template <typename T> SafeVoidPtr make_zero_buffer(size_t count)
 {
 	if (count == 0)
 		return nullptr;
-	void *raw = std::aligned_alloc(alignof(T), sizeof(T) * count);
+	void *raw = malloc(sizeof(T) * count);
 	if (!raw)
 		throw std::bad_alloc();
 	std::memset(raw, 0, sizeof(T) * count);
 	return SafeVoidPtr(raw, [](void *p) { std::free(p); });
+}
+
+template <typename T> uint64_t save_to_uint64(T val)
+{
+	if constexpr (!std::is_fundamental_v<T>) {
+		return T::save_class_to_uint64(val);
+	} else {
+		return static_cast<uint64_t>(val);
+	}
+}
+
+template <typename T> T load_from_uint64(uint64_t val)
+{
+	if constexpr (!std::is_fundamental_v<T>) {
+		return T::load_class_from_uint64(val);
+	} else {
+		return static_cast<T>(val);
+	}
 }
 
 struct c_data {
@@ -728,14 +775,14 @@ struct c_data {
 	void register_type_with_random(const std::string &reg_name,
 				       size_t count)
 	{
-		INFO << "Randomizing " << reg_name << " data with " << count
-		     << " elements..." << std::endl;
+		INFO << "Randomizing " << reg_name << " data with " << std::dec
+		     << count << " elements..." << std::endl;
 		std::vector<uint64_t> raw_values;
 		raw_values.reserve(count);
 
 		for (size_t i = 0; i < count; ++i) {
 			T val = get_rand<T>();
-			raw_values.push_back(static_cast<uint64_t>(val));
+			raw_values.push_back(save_to_uint64<T>(val));
 		}
 
 		map_reg_value[reg_name] = std::move(raw_values);
@@ -748,7 +795,7 @@ struct c_data {
 					       T min_val, T max_val,
 					       size_t count)
 	{
-		INFO << "Randomizing " << reg_name
+		INFO << "Randomizing " << reg_name << std::dec
 		     << " data with bounded range [" << min_val << ", "
 		     << max_val << "], " << count << " elements" << std::endl;
 		std::vector<uint64_t> raw_values;
@@ -756,7 +803,7 @@ struct c_data {
 
 		for (size_t i = 0; i < count; ++i) {
 			T val = get_rand_bound<T>(min_val, max_val);
-			raw_values.push_back(static_cast<uint64_t>(val));
+			raw_values.push_back(save_to_uint64<T>(val));
 		}
 
 		map_reg_value[reg_name] = std::move(raw_values);
@@ -774,7 +821,7 @@ struct c_data {
 		std::vector<uint64_t> result;
 		result.reserve(len);
 		for (size_t i = 0; i < len; ++i) {
-			result.push_back(static_cast<uint64_t>(p[i]));
+			result.push_back(save_to_uint64<T>(p[i]));
 		}
 		return result;
 	}
@@ -789,13 +836,17 @@ struct c_data {
 			return nullptr;
 
 		size_t bytes = data.size() * sizeof(T);
+		// aligned_alloc requires size to be a multiple of alignment.
+		// Round up bytes to the nearest multiple of align to satisfy this.
 		size_t align = (alignof(T) < 16) ? 16 : alignof(T);
+		size_t aligned_bytes = (bytes + align - 1) / align * align;
 
-		void *raw = std::aligned_alloc(align, bytes);
+		void *raw = std::aligned_alloc(align, aligned_bytes);
 		if (!raw)
 			throw std::bad_alloc();
+		std::memset(raw, 0, aligned_bytes);
 		for (size_t i = 0; i < data.size(); ++i) {
-			static_cast<T *>(raw)[i] = static_cast<T>(data[i]);
+			static_cast<T *>(raw)[i] = load_from_uint64<T>(data[i]);
 		}
 
 		return SafeVoidPtr(raw, [](void *p) { std::free(p); });
@@ -897,10 +948,12 @@ void inline print_runtime_iteration_end(void)
 template <typename T>
 int check_single_error(c_data &cur_data, std::string reg_name, uint64_t len)
 {
-	if (cur_data.map_reg_index.find(reg_name) ==
-	    cur_data.map_reg_index.end()) {
-		INFO << "check multi error "
-		     << " : " << reg_name << " not found in data\n";
+	if (cur_data.map_afterinst_typed_value.find(reg_name) ==
+		    cur_data.map_afterinst_typed_value.end() ||
+	    cur_data.map_selfcheck_typed_value.find(reg_name) ==
+		    cur_data.map_selfcheck_typed_value.end()) {
+		INFO << "check_single_error: " << reg_name
+		     << " not found in afterinst or selfcheck data\n";
 		return 1;
 	}
 
@@ -912,35 +965,72 @@ int check_single_error(c_data &cur_data, std::string reg_name, uint64_t len)
 		c_data::process_to_common<T>(
 			cur_data.map_selfcheck_typed_value[reg_name], len);
 
+	/* Record selfcheck result for baremetal verification. */
+	if (global_baremetal_gen.is_enabled()) {
+		void *data = cur_data.map_selfcheck_typed_value[reg_name].get();
+		size_t data_size = sizeof(T) * len;
+
+		if (cur_data.map_reg_index.find(reg_name) !=
+		    cur_data.map_reg_index.end()) {
+			/* Vector register result: store vd via vse8.v */
+			uint32_t vreg = cur_data.map_reg_index[reg_name];
+			global_baremetal_gen.append_expected_to_last(vreg, data,
+								     data_size);
+		} else {
+			/* Memory result (e.g. "mem_result" from store
+			 * instructions): compare the mem_op buffer directly. */
+			global_baremetal_gen.append_mem_expected_to_last(
+				data, data_size);
+		}
+	}
+
+	int has_error = 0;
 	int is_error = 0;
 	auto afterinst_value = cur_data.map_afterinst_reg_value[reg_name];
 	auto selfcheck_value = cur_data.map_selfcheck_reg_value[reg_name];
 
 	for (int i = 0; i < afterinst_value.size(); i++) {
-		is_error |= afterinst_value[i] != selfcheck_value[i];
+		is_error = afterinst_value[i] != selfcheck_value[i];
 
-		if (is_error) {
-			for (auto &[preinst_key, preinst_value] :
-			     cur_data.map_preinst_reg_value) {
-				auto value = preinst_value[i];
-				if (preinst_key == "vm") {
-					int row = i / 8;
-					int col = i % 8;
+		for (auto &[preinst_key, preinst_value] :
+		     cur_data.map_preinst_reg_value) {
+			if (preinst_value.empty() ||
+			    (size_t)i >= preinst_value.size()) {
+				VERBOSE << preinst_key << std::dec
+					<< " element[" << i
+					<< "] before value (empty)"
+					<< std::endl;
+				continue;
+			}
+			auto value = preinst_value[i];
+			if (preinst_key == "vm") {
+				int row = i / 8;
+				int col = i % 8;
+				if ((size_t)row < preinst_value.size()) {
 					value = (preinst_value[row] &
 						 (1ULL << col));
 				}
-				ERROR << preinst_key << " preinst value "
-				      << std::hex << value << std::dec
-				      << std::endl;
 			}
-			ERROR << reg_name << " inst value " << std::hex
+
+			VERBOSE << preinst_key << std::dec << " element[" << i
+				<< "] before value " << std::hex << "0x"
+				<< value << std::dec << std::endl;
+		}
+		VERBOSE << std::dec << "VD element[" << i << "] after value "
+			<< std::hex << "0x" << afterinst_value[i]
+			<< " selfcheck value "
+			<< "0x" << selfcheck_value[i] << std::dec << std::endl;
+		if (is_error) {
+			has_error = is_error;
+			ERROR << reg_name << std::dec << " element[" << i
+			      << "] after value " << std::hex << "0x"
 			      << afterinst_value[i]
-			      << " is not equal to selfcheck value "
-			      << selfcheck_value[i] << std::dec << std::endl;
+			      << " is not match selfcheck value "
+			      << "0x" << selfcheck_value[i] << std::dec
+			      << std::endl;
 		}
 	}
-
-	return is_error;
+	return has_error;
 }
 
 /* Recursively check multiple registers for errors against their golden model
@@ -1005,6 +1095,17 @@ uint32_t get_sd_inst(uint32_t rs2, uint32_t rs1, uint32_t imm)
 	return inst;
 }
 
+/* Encode a RISC-V SW (store word) instruction: M[rs1 + imm] = rs2. */
+uint32_t get_sw_inst(uint32_t rs2, uint32_t rs1, uint32_t imm)
+{
+	uint32_t inst = 0;
+	uint32_t imm_1 = get_bits_range(imm, 11, 5);
+	uint32_t imm_2 = get_bits_range(imm, 4, 0);
+	inst = (imm_1 << 25) + (rs2 << 20) + (rs1 << 15) + (0x2 << 12) +
+	       (imm_2 << 7) + (0x23);
+	return inst;
+}
+
 /* Encode a RISC-V LD (load doubleword) instruction: rd = M[rs1 + imm]. */
 uint32_t get_ld_inst(uint32_t rd, uint32_t rs1, uint32_t imm)
 {
@@ -1013,6 +1114,37 @@ uint32_t get_ld_inst(uint32_t rd, uint32_t rs1, uint32_t imm)
 	return inst;
 }
 
+/* Encode a RISC-V LW (load word) instruction: rd = M[rs1 + imm]. */
+uint32_t get_lw_inst(uint32_t rd, uint32_t rs1, uint32_t imm)
+{
+	uint32_t inst = 0;
+	inst = (imm << 20) + (rs1 << 15) + (0x2 << 12) + (rd << 7) + (0x3);
+	return inst;
+}
+
+/* xlen-aware load/store: use ld/sd on RV64, lw/sw on RV32. */
+#if __riscv_xlen == 32
+constexpr int XLEN_BYTES = 4;
+inline uint32_t get_load_inst(uint32_t rd, uint32_t rs1, uint32_t imm)
+{
+	return get_lw_inst(rd, rs1, imm);
+}
+inline uint32_t get_store_inst(uint32_t rs2, uint32_t rs1, uint32_t imm)
+{
+	return get_sw_inst(rs2, rs1, imm);
+}
+#else
+constexpr int XLEN_BYTES = 8;
+inline uint32_t get_load_inst(uint32_t rd, uint32_t rs1, uint32_t imm)
+{
+	return get_ld_inst(rd, rs1, imm);
+}
+inline uint32_t get_store_inst(uint32_t rs2, uint32_t rs1, uint32_t imm)
+{
+	return get_sd_inst(rs2, rs1, imm);
+}
+#endif
+
 /* Generate instructions to save all general-purpose registers (x1-x31, except
  * x2/sp) onto the stack. Decrements sp by 8*31 bytes to allocate stack space. */
 void save_context(std::vector<uint32_t> &insts)
@@ -1020,12 +1152,13 @@ void save_context(std::vector<uint32_t> &insts)
 	uint32_t imm;
 	uint32_t maxm_12 = 1u << 12;
 
-	imm = maxm_12 - (8 * 31);
+	imm = maxm_12 - (XLEN_BYTES * 31);
 	insts.push_back(get_addi_inst(2, 2, imm));
 
 	for (int i = 1; i < 32; i++) {
 		if (i != 2)
-			insts.push_back(get_sd_inst(i, 2, 8 * (i - 1)));
+			insts.push_back(
+				get_store_inst(i, 2, XLEN_BYTES * (i - 1)));
 	}
 }
 
@@ -1038,24 +1171,55 @@ void restore_context(std::vector<uint32_t> &insts)
 
 	for (int i = 1; i < 32; i++) {
 		if (i != 2)
-			insts.push_back(get_ld_inst(i, 2, 8 * (i - 1)));
+			insts.push_back(
+				get_load_inst(i, 2, XLEN_BYTES * (i - 1)));
 	}
 
-	insts.push_back(get_addi_inst(2, 2, 8 * 31));
+	insts.push_back(get_addi_inst(2, 2, XLEN_BYTES * 31));
 }
 
-/* Generate an instruction sequence to load a 64-bit value from memory address
- * 'ptr' into register 'reg'. Constructs the full 64-bit address by splitting
+/* Generate an instruction sequence to load a value from memory address
+ * 'ptr' into register 'reg'. Constructs the address by splitting
  * it into 10-bit segments and combining them via ADDI+MUL chains. Uses x28-x31
- * as temporary registers. */
-void load_reg(std::vector<uint32_t> &insts, uint64_t ptr, uint64_t reg)
+ * as temporary registers. Supports both RV32 and RV64. */
+void load_reg(std::vector<uint32_t> &insts, uintptr_t ptr, uint64_t reg)
 {
 	uint64_t inst = 0;
 
-	uint64_t mask = (1ull << 10) - 1;
 	inst = get_addi_inst(30, 0, 1ull << 10);
 	insts.push_back(inst);
 
+#if __riscv_xlen == 32
+	uint32_t high2 = (ptr >> 30) & 0x3;
+	if (high2 != 0) {
+		inst = get_addi_inst(29, 0, high2);
+		insts.push_back(inst);
+		for (int j = 0; j < 3; j++) {
+			inst = get_mul_inst(29, 29, 30);
+			insts.push_back(inst);
+		}
+		inst = get_add_inst(31, 0, 29);
+		insts.push_back(inst);
+	} else {
+		inst = get_add_inst(31, 0, 0);
+		insts.push_back(inst);
+	}
+
+	for (int i = 20; i >= 0; i -= 10) {
+		uint64_t t_ptr = get_bits_range(ptr, i + 9, i);
+		inst = get_addi_inst(29, 0, t_ptr);
+		insts.push_back(inst);
+		for (int j = 0; j < i / 10; j++) {
+			inst = get_mul_inst(29, 29, 30);
+			insts.push_back(inst);
+		}
+		inst = get_add_inst(31, 31, 29);
+		insts.push_back(inst);
+	}
+
+	inst = get_lw_inst(reg, 31, 0);
+	insts.push_back(inst);
+#else
 	uint64_t high4 = (ptr >> 60) & 0xf;
 	if (high4 != 0) {
 		inst = get_addi_inst(29, 0, high4);
@@ -1088,19 +1252,42 @@ void load_reg(std::vector<uint32_t> &insts, uint64_t ptr, uint64_t reg)
 
 	inst = get_ld_inst(reg, 31, 0);
 	insts.push_back(inst);
+#endif
 }
 
 /* Generate an instruction sequence to store the value of register 'reg' to
- * memory address 'ptr'. Constructs the 64-bit address using ADDI+MUL chains
+ * memory address 'ptr'. Constructs the address using ADDI+MUL chains
  * in 10-bit segments. Uses x28-x31 as temporary registers. */
-void store_reg(std::vector<uint32_t> &insts, uint64_t ptr, uint64_t reg)
+void store_reg(std::vector<uint32_t> &insts, uintptr_t ptr, uint64_t reg)
 {
 	uint64_t inst = 0;
 
-	uint64_t mask = (1ull << 10) - 1;
 	inst = get_addi_inst(30, 0, 1ull << 10);
 	insts.push_back(inst);
 
+#if __riscv_xlen == 32
+	for (int i = 20; i >= 0; i -= 10) {
+		uint64_t t_ptr = get_bits_range(ptr, i + 9, i);
+		inst = get_addi_inst(29, 0, t_ptr);
+		insts.push_back(inst);
+
+		for (int j = 0; j < i / 10; j++) {
+			inst = get_mul_inst(29, 29, 30);
+			insts.push_back(inst);
+		}
+
+		if (i == 20) {
+			inst = get_add_inst(31, 0, 29);
+			insts.push_back(inst);
+		} else {
+			inst = get_add_inst(31, 31, 29);
+			insts.push_back(inst);
+		}
+	}
+
+	inst = get_sw_inst(reg, 31, 0);
+	insts.push_back(inst);
+#else
 	for (int i = 50; i >= 0; i -= 10) {
 		uint64_t t_ptr = get_bits_range(ptr, i + 9, i);
 		inst = get_addi_inst(29, 0, t_ptr);
@@ -1122,6 +1309,7 @@ void store_reg(std::vector<uint32_t> &insts, uint64_t ptr, uint64_t reg)
 
 	inst = get_sd_inst(reg, 31, 0);
 	insts.push_back(inst);
+#endif
 }
 
 /* Load a single scalar integer register value from test data into the target
@@ -1142,7 +1330,15 @@ void load_single_int(std::vector<uint32_t> &insts, c_data &cur_data,
 		cur_data.map_reg_value[reg_name]);
 
 	void *data = cur_data.map_reg_typed_value[reg_name].get();
-	load_reg(insts, (uint64_t)data, vd);
+
+	/* Record scalar load for baremetal generation */
+	if (global_baremetal_gen.is_enabled()) {
+		T val = *static_cast<T *>(data);
+		global_baremetal_gen.record_scalar_load(
+			vd, static_cast<uint64_t>(val));
+	}
+
+	load_reg(insts, (uintptr_t)data, vd);
 }
 
 /* Recursively load multiple scalar integer registers from test data.
@@ -1177,7 +1373,7 @@ void store_single_preinst_int(std::vector<uint32_t> &insts, c_data &cur_data,
 	cur_data.map_preinst_typed_value[reg_name] = make_zero_buffer<T>(1);
 
 	void *data = cur_data.map_preinst_typed_value[reg_name].get();
-	store_reg(insts, (uint64_t)data, vd);
+	store_reg(insts, (uintptr_t)data, vd);
 }
 
 /* Recursively save multiple scalar registers' pre-instruction values. */
@@ -1212,7 +1408,7 @@ void store_single_afterinst_int(std::vector<uint32_t> &insts, c_data &cur_data,
 	cur_data.map_afterinst_typed_value[reg_name] = make_zero_buffer<T>(1);
 
 	void *data = cur_data.map_afterinst_typed_value[reg_name].get();
-	store_reg(insts, (uint64_t)data, vd);
+	store_reg(insts, (uintptr_t)data, vd);
 }
 
 /* Recursively save multiple scalar registers' post-instruction values. */
@@ -1233,6 +1429,22 @@ void store_multi_afterinst_int(std::vector<uint32_t> &insts, c_data &cur_data,
 
 uint64_t val_placeholder[10000];
 int val_top = 0;
+/* Generate a CSRRS instruction to read a CSR value into memory.
+ * Emits csrrs x28, csr, x0 (read CSR into x28 without modifying it),
+ * then stores x28 into val_placeholder via store_reg.
+ * Returns the val_placeholder slot index; after run_instruction(),
+ * read the result from val_placeholder[returned_index].
+ * Encoding: csrrs rd=x28, csr, rs1=x0 */
+int csrr(std::vector<uint32_t> &insts, uint32_t csr)
+{
+	uint32_t inst = (csr << 20) | (0 << 15) | (0b010 << 12) | (28 << 7) |
+			0b1110011;
+	insts.push_back(inst);
+	val_placeholder[val_top] = 0;
+	store_reg(insts, (uintptr_t)&val_placeholder[val_top], 28);
+	return val_top++;
+}
+
 /* Generate a CSRRW instruction to write a value into the specified CSR.
  * First loads the value into temporary register x28 via load_reg, then
  * emits csrrw with rd=x0 (discard old CSR value).
@@ -1240,7 +1452,7 @@ int val_top = 0;
 void csrrw(std::vector<uint32_t> &insts, uint32_t reg, uint64_t val)
 {
 	val_placeholder[val_top++] = val;
-	uint64_t ptr = (uint64_t)(&(val_placeholder[val_top - 1]));
+	uintptr_t ptr = (uintptr_t)(&(val_placeholder[val_top - 1]));
 	load_reg(insts, ptr, 28);
 	uint32_t inst = (reg << 20) + (28 << 15) + (0b001 << 12) + (0 << 7) +
 			(0b1110011);
@@ -1257,7 +1469,10 @@ void run_instruction(std::vector<uint32_t> &instructions_queue)
 	      << "with inst count " << instructions_queue.size() << "...\n";
 	//output instructions to file
 	int kInstructionCount = instructions_queue.size();
-	uint32_t *instructions = new uint32_t[kInstructionCount];
+
+	// 使用智能指针确保异常安全
+	auto instructions =
+		std::unique_ptr<uint32_t[]>(new uint32_t[kInstructionCount]);
 	for (int i = 0; i < kInstructionCount; ++i) {
 		instructions[i] = instructions_queue[i];
 	}
@@ -1268,7 +1483,7 @@ void run_instruction(std::vector<uint32_t> &instructions_queue)
 		std::cerr << "Failed to open output file." << std::endl;
 		exit(1);
 	}
-	outFile.write(reinterpret_cast<char *>(instructions),
+	outFile.write(reinterpret_cast<char *>(instructions.get()),
 		      kInstructionCount * sizeof(uint32_t));
 	outFile.close();
 
@@ -1283,6 +1498,18 @@ void run_instruction(std::vector<uint32_t> &instructions_queue)
 		exit(1);
 	}
 
+	// 使用 RAII 包装器确保 munmap 总是被调用
+	struct MmapGuard {
+		void *ptr;
+		size_t size;
+		~MmapGuard()
+		{
+			if (ptr && ptr != MAP_FAILED) {
+				munmap(ptr, size);
+			}
+		}
+	} mmap_guard{ codeMemory, kInstructionSize + 4 };
+
 	std::ifstream inFile(binfilename, std::ios::binary);
 	inFile.read(reinterpret_cast<char *>(codeMemory), kInstructionSize);
 	inFile.close();
@@ -1295,8 +1522,8 @@ void run_instruction(std::vector<uint32_t> &instructions_queue)
 	__asm__ volatile("fence.i");
 	func();
 
-	munmap(codeMemory, kInstructionSize + 4);
-	delete[] instructions;
+	// munmap 由 MmapGuard 自动处理
+	// instructions 由 unique_ptr 自动释放
 }
 
 #endif

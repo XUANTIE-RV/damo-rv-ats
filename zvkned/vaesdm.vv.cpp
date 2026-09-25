@@ -15,12 +15,6 @@ const std::vector<InstField> vop_inst_fields = {
 	{ 6, 0, 0x77, true, RegClass::NotReg, "opcode" }
 };
 
-eg128 vaesdm_model(const eg128 &state, const eg128 &rkey)
-{
-	return aes_mixcolumns_inv(
-		eg128_xor(aes_subbytes_inv(aes_shift_rows_inv(state)), rkey));
-}
-
 int check_illegal(c_data &cur_data)
 {
 	int vd = cur_data.map_reg_index["vd"];
@@ -52,7 +46,8 @@ template <typename Td> int run_self_result(c_data &cur_data)
 		crypto_store_group<uint32_t, 4>(
 			selfcheck_data, i,
 			vaesdm_model(crypto_load_group<uint32_t, 4>(vd_data, i),
-				     crypto_load_group<uint32_t, 4>(vs2_data, i)));
+				     crypto_load_group<uint32_t, 4>(vs2_data,
+								    i)));
 	}
 	return 0;
 }
@@ -69,10 +64,9 @@ int main(int argc, char *argv[])
 		c_data cur_data;
 		init_vector_cfg(it, cur_cfg, cur_data, check_illegal,
 				vop_inst_fields);
-		int has_error =
-			crypto_per_run_vd_vs2<uint32_t>(
-				it, cur_cfg, cur_data, vop_inst_fields,
-				check_illegal, run_self_result<uint32_t>);
+		int has_error = crypto_per_run_vd_vs2<uint32_t>(
+			it, cur_cfg, cur_data, vop_inst_fields, check_illegal,
+			run_self_result<uint32_t>);
 		crypto_report_error(cur_cfg, has_error);
 		print_runtime_iteration_end();
 		if (has_error && early_stop)

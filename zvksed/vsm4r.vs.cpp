@@ -15,15 +15,6 @@ const std::vector<InstField> vop_inst_fields = {
 	{ 6, 0, 0x77, true, RegClass::NotReg, "opcode" }
 };
 
-eg128 vsm4r_model(const eg128 &x, const eg128 &rk)
-{
-	uint32_t x4 = sm4_round(x[0], sm4_subword(x[1] ^ x[2] ^ x[3] ^ rk[0]));
-	uint32_t x5 = sm4_round(x[1], sm4_subword(x[2] ^ x[3] ^ x4 ^ rk[1]));
-	uint32_t x6 = sm4_round(x[2], sm4_subword(x[3] ^ x4 ^ x5 ^ rk[2]));
-	uint32_t x7 = sm4_round(x[3], sm4_subword(x4 ^ x5 ^ x6 ^ rk[3]));
-	return { x4, x5, x6, x7 };
-}
-
 int check_illegal(c_data &cur_data)
 {
 	int vd = cur_data.map_reg_index["vd"];
@@ -70,10 +61,9 @@ int main(int argc, char *argv[])
 		c_data cur_data;
 		init_vector_cfg(it, cur_cfg, cur_data, check_illegal,
 				vop_inst_fields);
-		int has_error =
-			crypto_per_run_vd_scalar_vs2<uint32_t>(
-				it, cur_cfg, cur_data, vop_inst_fields,
-				check_illegal, run_self_result<uint32_t>);
+		int has_error = crypto_per_run_vd_scalar_vs2<uint32_t>(
+			it, cur_cfg, cur_data, vop_inst_fields, check_illegal,
+			run_self_result<uint32_t>);
 		crypto_report_error(cur_cfg, has_error);
 		print_runtime_iteration_end();
 		if (has_error && early_stop)

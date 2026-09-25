@@ -24,13 +24,13 @@ int check_illegal(c_data &cur_data)
 				    .check_overlap = true,
 				    .force_no_overlap = true };
 	uint64_t egw = (vector_cfg.sew == sew_e64) ? 256 : 128;
-	int illegal = !(VectorRegValidator::validate(
-			      VregOperand::one_pow(vd),
-			      { VregOperand::one_pow(vs2),
-				VregOperand::one_pow(vs1) },
-			      1, config)) ||
-		      (vector_cfg.sew != sew_e32 && vector_cfg.sew != sew_e64) ||
-		      !crypto_check_egs(4) || !crypto_lmul_egw_ok(egw);
+	int illegal =
+		!(VectorRegValidator::validate(VregOperand::one_pow(vd),
+					       { VregOperand::one_pow(vs2),
+						 VregOperand::one_pow(vs1) },
+					       1, config)) ||
+		(vector_cfg.sew != sew_e32 && vector_cfg.sew != sew_e64) ||
+		!crypto_check_egs(4) || !crypto_lmul_egw_ok(egw);
 	print_illegal_status(illegal);
 	return illegal;
 }
@@ -39,12 +39,12 @@ template <typename T> int run_self_result(c_data &cur_data)
 {
 	static_assert(sizeof(T) == 4 || sizeof(T) == 8,
 		      "vsha2cl.vv legal path requires e32/e64");
-	T *vd_data = static_cast<T *>(
-		cur_data.map_preinst_typed_value["vd"].get());
-	T *vs2_data = static_cast<T *>(
-		cur_data.map_preinst_typed_value["vs2"].get());
-	T *vs1_data = static_cast<T *>(
-		cur_data.map_preinst_typed_value["vs1"].get());
+	T *vd_data =
+		static_cast<T *>(cur_data.map_preinst_typed_value["vd"].get());
+	T *vs2_data =
+		static_cast<T *>(cur_data.map_preinst_typed_value["vs2"].get());
+	T *vs1_data =
+		static_cast<T *>(cur_data.map_preinst_typed_value["vs1"].get());
 	cur_data.map_selfcheck_typed_value["vd"] =
 		c_data::process_from_common<T>(
 			cur_data.map_preinst_reg_value["vd"]);
@@ -61,8 +61,7 @@ template <typename T> int run_self_result(c_data &cur_data)
 		T w1 = vs1[1];
 		sha2_round(a, b, c, d, e, f, g, h, w0);
 		sha2_round(a, b, c, d, e, f, g, h, w1);
-		crypto_store_group<T, 4>(selfcheck_data, i,
-					 { f, e, b, a });
+		crypto_store_group<T, 4>(selfcheck_data, i, { f, e, b, a });
 	}
 	return 0;
 }

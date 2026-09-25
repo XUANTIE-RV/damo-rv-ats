@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-#include "../common/v_common.h"
+#include "../common/v_crypto_common.h"
 
 const std::vector<InstField> vop_inst_fields = {
 	{ 31, 26, 0x28, true, RegClass::NotReg, "funct6" },
@@ -14,114 +14,6 @@ const std::vector<InstField> vop_inst_fields = {
 	{ 11, 7, 0x00, false, RegClass::Vector, "vd" },
 	{ 6, 0, 0x77, true, RegClass::NotReg, "opcode" }
 };
-
-struct gf128_t {
-	uint64_t hi;
-	uint64_t lo;
-};
-
-gf128_t gf128_zero()
-{
-	return { 0, 0 };
-}
-
-gf128_t gf128_xor(const gf128_t &lhs, const gf128_t &rhs)
-{
-	return { lhs.hi ^ rhs.hi, lhs.lo ^ rhs.lo };
-}
-
-uint8_t brev8_byte(uint8_t x)
-{
-	uint8_t result = 0;
-	for (int i = 0; i < 8; ++i) {
-		result |= ((x >> i) & 1u) << (7 - i);
-	}
-	return result;
-}
-
-gf128_t load_eg128_from_e32(const uint32_t *data, int group_idx)
-{
-	int base = group_idx * 4;
-	gf128_t result;
-	result.hi = (static_cast<uint64_t>(data[base + 3]) << 32) |
-		    static_cast<uint64_t>(data[base + 2]);
-	result.lo = (static_cast<uint64_t>(data[base + 1]) << 32) |
-		    static_cast<uint64_t>(data[base + 0]);
-	return result;
-}
-
-void store_eg128_to_e32(uint32_t *data, int group_idx, const gf128_t &x)
-{
-	int base = group_idx * 4;
-	data[base + 0] = static_cast<uint32_t>(x.lo & 0xffffffffu);
-	data[base + 1] = static_cast<uint32_t>(x.lo >> 32);
-	data[base + 2] = static_cast<uint32_t>(x.hi & 0xffffffffu);
-	data[base + 3] = static_cast<uint32_t>(x.hi >> 32);
-}
-
-gf128_t gf128_brev8(const gf128_t &x)
-{
-	gf128_t result = gf128_zero();
-
-	for (int byte_idx = 0; byte_idx < 8; ++byte_idx) {
-		uint64_t shift = byte_idx * 8;
-		uint8_t byte = static_cast<uint8_t>((x.lo >> shift) & 0xffu);
-		result.lo |= static_cast<uint64_t>(brev8_byte(byte)) << shift;
-	}
-
-	for (int byte_idx = 0; byte_idx < 8; ++byte_idx) {
-		uint64_t shift = byte_idx * 8;
-		uint8_t byte = static_cast<uint8_t>((x.hi >> shift) & 0xffu);
-		result.hi |= static_cast<uint64_t>(brev8_byte(byte)) << shift;
-	}
-
-	return result;
-}
-
-bool gf128_get_bit(const gf128_t &x, int bit_idx)
-{
-	if (bit_idx < 64) {
-		return ((x.lo >> bit_idx) & 1ull) != 0;
-	}
-	return ((x.hi >> (bit_idx - 64)) & 1ull) != 0;
-}
-
-bool gf128_get_msb(const gf128_t &x)
-{
-	return ((x.hi >> 63) & 1ull) != 0;
-}
-
-void gf128_shl1_inplace(gf128_t &x)
-{
-	uint64_t lo_carry = x.lo >> 63;
-	x.lo <<= 1;
-	x.hi = (x.hi << 1) | lo_carry;
-}
-
-void gf128_xor_low8_inplace(gf128_t &x, uint8_t c)
-{
-	x.lo ^= static_cast<uint64_t>(c);
-}
-
-gf128_t gf128_mul_gcm(const gf128_t &y, const gf128_t &h_init)
-{
-	gf128_t z = gf128_zero();
-	gf128_t h = h_init;
-
-	for (int bit = 0; bit < 128; ++bit) {
-		if (gf128_get_bit(y, bit)) {
-			z = gf128_xor(z, h);
-		}
-
-		bool reduce = gf128_get_msb(h);
-		gf128_shl1_inplace(h);
-		if (reduce) {
-			gf128_xor_low8_inplace(h, 0x87);
-		}
-	}
-
-	return z;
-}
 
 gf128_t vgmul_group_model(const gf128_t &vd_old, const gf128_t &vs2_val)
 {
@@ -140,15 +32,14 @@ int check_illegal(c_data &cur_data)
 				    .check_overlap = false };
 
 	int lmul_shift = (vector_cfg.lmul < 4) ? vector_cfg.lmul :
-					       -(8 - vector_cfg.lmul);
-	uint64_t effective_vlen_bits = vlen * 8;
+						 -(8 - vector_cfg.lmul);
+	uint64_t effective_vlen_bits = vlenb * 8;
 	bool lmul_large_enough = false;
 	if (lmul_shift >= 0) {
-		lmul_large_enough =
-			(effective_vlen_bits << lmul_shift) >= 128;
+		lmul_large_enough = (effective_vlen_bits << lmul_shift) >= 128;
 	} else {
-		lmul_large_enough =
-			(effective_vlen_bits >> (-lmul_shift)) >= 128;
+		lmul_large_enough = (effective_vlen_bits >> (-lmul_shift)) >=
+				    128;
 	}
 
 	/* Spec classification vs framework handling:
@@ -162,12 +53,12 @@ int check_illegal(c_data &cur_data)
 	 * they stay on the expected-illegal path to avoid unexpected SIGILL
 	 * reports and to match the harness semantics.
 	 */
-	int illegal = !(
-		VectorRegValidator::validate(VregOperand::one_pow(vd),
-					     {
-						     VregOperand::one_pow(vs2),
-					     },
-					     1, config)) ||
+	int illegal = !(VectorRegValidator::validate(
+			      VregOperand::one_pow(vd),
+			      {
+				      VregOperand::one_pow(vs2),
+			      },
+			      1, config)) ||
 		      vector_cfg.sew != sew_e32 || (vector_cfg.len % 4) != 0 ||
 		      (vector_cfg.vstart % 4) != 0 || !lmul_large_enough;
 	print_illegal_status(illegal);
@@ -179,8 +70,8 @@ template <typename Ts2, typename Td> int run_self_result(c_data &cur_data)
 	static_assert(sizeof(Ts2) == 4, "vgmul.vv legal path requires e32 vs2");
 	static_assert(sizeof(Td) == 4, "vgmul.vv legal path requires e32 vd");
 
-	Td *vd_data = static_cast<Td *>(
-		cur_data.map_preinst_typed_value["vd"].get());
+	Td *vd_data =
+		static_cast<Td *>(cur_data.map_preinst_typed_value["vd"].get());
 	Ts2 *vs2_data = static_cast<Ts2 *>(
 		cur_data.map_preinst_typed_value["vs2"].get());
 
@@ -234,10 +125,10 @@ int per_run(int it, c_cfg &cur_cfg, c_data &cur_data)
 				   { vector_cfg.lmul, vector_cfg.lmul },
 				   { vector_cfg.len, vector_cfg.len });
 
-	store_multi_preinst_vector<Td, Ts2>(
-		insts, cur_data, { "vd", "vs2" },
-		{ vector_cfg.lmul, vector_cfg.lmul },
-		{ vector_cfg.len, vector_cfg.len });
+	store_multi_preinst_vector<Td, Ts2>(insts, cur_data, { "vd", "vs2" },
+					    { vector_cfg.lmul,
+					      vector_cfg.lmul },
+					    { vector_cfg.len, vector_cfg.len });
 
 	vsetvli_lmul_sew(insts, vector_cfg.lmul, vector_cfg.sew,
 			 vector_cfg.len);
@@ -259,8 +150,7 @@ int per_run(int it, c_cfg &cur_cfg, c_data &cur_data)
 		return has_illegal;
 
 	save_multi_preinst_value_to_common<Td, Ts2>(
-		cur_data, { "vd", "vs2" },
-		{ vector_cfg.len, vector_cfg.len });
+		cur_data, { "vd", "vs2" }, { vector_cfg.len, vector_cfg.len });
 
 	run_self_result<Ts2, Td>(cur_data);
 

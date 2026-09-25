@@ -43,7 +43,7 @@ template <typename Td> int run_self_result(c_data &cur_data)
 	for (int i = vector_cfg.vstart / 4; i < vector_cfg.len / 4; ++i) {
 		eg128 state = crypto_load_group<uint32_t, 4>(vd_data, i);
 		crypto_store_group<uint32_t, 4>(selfcheck_data, i,
-						 eg128_xor(state, rkey));
+						eg128_xor(state, rkey));
 	}
 	return 0;
 }
@@ -60,10 +60,9 @@ int main(int argc, char *argv[])
 		c_data cur_data;
 		init_vector_cfg(it, cur_cfg, cur_data, check_illegal,
 				vop_inst_fields);
-		int has_error =
-			crypto_per_run_vd_scalar_vs2<uint32_t>(
-				it, cur_cfg, cur_data, vop_inst_fields,
-				check_illegal, run_self_result<uint32_t>);
+		int has_error = crypto_per_run_vd_scalar_vs2<uint32_t>(
+			it, cur_cfg, cur_data, vop_inst_fields, check_illegal,
+			run_self_result<uint32_t>);
 		crypto_report_error(cur_cfg, has_error);
 		print_runtime_iteration_end();
 		if (has_error && early_stop)

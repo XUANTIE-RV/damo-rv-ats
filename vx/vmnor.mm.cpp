@@ -72,7 +72,7 @@ int run_self_result(c_data &cur_data)
 
 	uint8_t *uncheck_data = static_cast<uint8_t *>(
 		cur_data.map_afterinst_typed_value["vd"].get());
-	for (int j = vector_cfg.len; j < vlen * 8; j++) {
+	for (int j = vector_cfg.len; j < vlenb * 8; j++) {
 		int byte_idx = j / 8;
 		int bit_idx = j % 8;
 		selfcheck_data[byte_idx] |= uncheck_data[byte_idx] &
@@ -87,11 +87,12 @@ int per_run(int it, c_cfg &cur_cfg, c_data &cur_data)
 	cur_data.set_value_from_inst(vop_inst_fields, vector_cfg.inst);
 
 	if (random_mode) {
-		cur_data.register_type_with_random<uint8_t>("vs1", vlen);
-		cur_data.register_type_with_random<uint8_t>("vs2", vlen);
-		cur_data.register_type_with_random<uint8_t>("vd", vlen);
+		cur_data.register_type_with_random<uint8_t>("vs1", vlenb);
+		cur_data.register_type_with_random<uint8_t>("vs2", vlenb);
+		cur_data.register_type_with_random<uint8_t>("vd", vlenb);
 		if (!cur_data.map_reg_index["vm"])
-			cur_data.register_type_with_random<uint8_t>("vm", vlen);
+			cur_data.register_type_with_random<uint8_t>("vm",
+								    vlenb);
 		cur_data.set_value_to_cfg(cur_cfg);
 		cur_cfg.DESC = cur_data.get_DESC_from_inst(vop_inst_fields,
 							   vector_cfg.inst);
@@ -107,16 +108,17 @@ int per_run(int it, c_cfg &cur_cfg, c_data &cur_data)
 	std::vector<uint32_t> insts;
 
 	save_context(insts);
+	vzero_all(insts);
 
 	load_multi_vector<uint8_t, uint8_t, uint8_t, uint8_t>(
 		insts, cur_data, { "vd", "vs1", "vs2", "vm" },
 		{ lmul_m1, lmul_m1, lmul_m1, lmul_m1 },
-		{ vlen, vlen, vlen, vlen });
+		{ vlenb, vlenb, vlenb, vlenb });
 
 	store_multi_preinst_vector<uint8_t, uint8_t, uint8_t, uint8_t>(
 		insts, cur_data, { "vd", "vs1", "vs2", "vm" },
 		{ lmul_m1, lmul_m1, lmul_m1, lmul_m1 },
-		{ vlen, vlen, vlen, vlen });
+		{ vlenb, vlenb, vlenb, vlenb });
 
 	vsetvli_lmul_sew(insts, vector_cfg.lmul, vector_cfg.sew,
 			 vector_cfg.len);
@@ -126,7 +128,7 @@ int per_run(int it, c_cfg &cur_cfg, c_data &cur_data)
 	insts.push_back(vector_cfg.inst);
 
 	store_multi_afterinst_vector<uint8_t>(insts, cur_data, { "vd" },
-					      { lmul_m1 }, { vlen });
+					      { lmul_m1 }, { vlenb });
 
 	restore_context(insts);
 
@@ -138,11 +140,12 @@ int per_run(int it, c_cfg &cur_cfg, c_data &cur_data)
 
 	save_multi_preinst_value_to_common<uint8_t, uint8_t, uint8_t, uint8_t>(
 		cur_data, { "vd", "vs1", "vs2", "vm" },
-		{ vlen, vlen, vlen, vlen });
+		{ vlenb, vlenb, vlenb, vlenb });
 
 	run_self_result(cur_data);
 
-	int is_error = check_multi_error<uint8_t>(cur_data, { "vd" }, { vlen });
+	int is_error =
+		check_multi_error<uint8_t>(cur_data, { "vd" }, { vlenb });
 
 	if (is_error) {
 		DEBUG << std::hex << json(cur_data).dump(4) << std::endl;

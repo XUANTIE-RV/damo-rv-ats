@@ -45,7 +45,7 @@ template <typename Td> int run_self_result(c_data &cur_data)
 		cur_data.map_selfcheck_typed_value["vd"].get());
 
 	// Copy 4 registers: evl = 4*VLEN/SEW
-	int evl = 4 * vlen / sizeof(Td);
+	int evl = 4 * vlenb / sizeof(Td);
 	for (int j = 0; j < evl; j++) {
 		selfcheck_data[j] = vs2_data[j];
 	}
@@ -57,7 +57,7 @@ template <typename Td> int per_run(int it, c_cfg &cur_cfg, c_data &cur_data)
 {
 	cur_data.set_value_from_inst(vop_inst_fields, vector_cfg.inst);
 
-	int evl = 4 * vlen / sizeof(Td);
+	int evl = 4 * vlenb / sizeof(Td);
 
 	if (random_mode) {
 		cur_data.register_type_with_random<Td>("vs2", evl);
@@ -77,6 +77,7 @@ template <typename Td> int per_run(int it, c_cfg &cur_cfg, c_data &cur_data)
 	std::vector<uint32_t> insts;
 
 	save_context(insts);
+	vzero_all(insts);
 
 	// EMUL=4 => lmul_m4
 	load_multi_vector<Td, Td>(insts, cur_data, { "vd", "vs2" },
