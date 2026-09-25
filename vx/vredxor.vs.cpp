@@ -78,11 +78,12 @@ int per_run(int it, c_cfg &cur_cfg, c_data &cur_data)
 	cur_data.set_value_from_inst(vop_inst_fields, vector_cfg.inst);
 
 	if (random_mode) {
-		cur_data.register_type_with_random<Ts1>("vs1", vlen);
+		cur_data.register_type_with_random<Ts1>("vs1", vlenb);
 		cur_data.register_type_with_random<Ts2>("vs2", vector_cfg.len);
-		cur_data.register_type_with_random<Td>("vd", vlen);
+		cur_data.register_type_with_random<Td>("vd", vlenb);
 		if (!cur_data.map_reg_index["vm"])
-			cur_data.register_type_with_random<uint8_t>("vm", vlen);
+			cur_data.register_type_with_random<uint8_t>("vm",
+								    vlenb);
 		cur_data.set_value_to_cfg(cur_cfg);
 		cur_cfg.DESC = cur_data.get_DESC_from_inst(vop_inst_fields,
 							   vector_cfg.inst);
@@ -98,16 +99,17 @@ int per_run(int it, c_cfg &cur_cfg, c_data &cur_data)
 	std::vector<uint32_t> insts;
 
 	save_context(insts);
+	vzero_all(insts);
 
 	load_multi_vector<Td, Ts1, Ts2, uint8_t>(
 		insts, cur_data, { "vd", "vs1", "vs2", "vm" },
 		{ lmul_m1, lmul_m1, vector_cfg.lmul, lmul_m1 },
-		{ vlen, vlen, vector_cfg.len, vlen });
+		{ vlenb, vlenb, vector_cfg.len, vlenb });
 
 	store_multi_preinst_vector<Td, Ts1, Ts2, uint8_t>(
 		insts, cur_data, { "vd", "vs1", "vs2", "vm" },
 		{ lmul_m1, lmul_m1, vector_cfg.lmul, lmul_m1 },
-		{ vlen, vlen, vector_cfg.len, vlen });
+		{ vlenb, vlenb, vector_cfg.len, vlenb });
 
 	vsetvli_lmul_sew(insts, vector_cfg.lmul, vector_cfg.sew,
 			 vector_cfg.len);
@@ -117,7 +119,7 @@ int per_run(int it, c_cfg &cur_cfg, c_data &cur_data)
 	insts.push_back(vector_cfg.inst);
 
 	store_multi_afterinst_vector<Td>(insts, cur_data, { "vd" }, { lmul_m1 },
-					 { vlen });
+					 { vlenb });
 
 	restore_context(insts);
 
@@ -129,11 +131,11 @@ int per_run(int it, c_cfg &cur_cfg, c_data &cur_data)
 
 	save_multi_preinst_value_to_common<Td, Ts1, Ts2, uint8_t>(
 		cur_data, { "vd", "vs1", "vs2", "vm" },
-		{ vlen, vlen, vector_cfg.len, vlen });
+		{ vlenb, vlenb, vector_cfg.len, vlenb });
 
 	run_self_result<Ts1, Ts2, Td>(cur_data);
 
-	int is_error = check_multi_error<Td>(cur_data, { "vd" }, { vlen });
+	int is_error = check_multi_error<Td>(cur_data, { "vd" }, { vlenb });
 
 	if (is_error) {
 		DEBUG << std::hex << json(cur_data).dump(4) << std::endl;

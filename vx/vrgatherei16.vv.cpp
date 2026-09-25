@@ -45,8 +45,8 @@ static int get_index_len()
 {
 	int idx_lmul = get_index_lmul();
 	int idx_size = (idx_lmul > 4) ? 1 : 1 << idx_lmul;
-	return idx_size * vlen /
-	       2; // EEW=16, so elements per register = vlen/16bits = vlen/2
+	return idx_size * vlenb /
+	       2; // EEW=16, so elements per register = vlenb/16bits = vlenb/2
 }
 
 int check_illegal(c_data &cur_data)
@@ -91,7 +91,13 @@ template <typename Ts2, typename Td> int run_self_result(c_data &cur_data)
 	int vs1 = cur_data.map_reg_index["vs1"];
 	int vd = cur_data.map_reg_index["vd"];
 	int SEW = sizeof(Ts2) * 8;
-	int vlmax = vlen / sizeof(Td);
+
+	// VLMAX = LMUL * VLEN / SEW
+	// vlenb is VLENB (bytes), so total_bytes = vlenb * LMUL_factor
+	uint64_t total_bytes = (vector_cfg.lmul < 4) ?
+				       (vlenb * (1 << vector_cfg.lmul)) :
+				       (vlenb / (1 << (8 - vector_cfg.lmul)));
+	uint64_t vlmax = total_bytes / sizeof(Td);
 
 	// vs1 is always uint16_t (EEW=16)
 	uint16_t *vs1_data = static_cast<uint16_t *>(
@@ -140,16 +146,21 @@ int per_run(int it, c_cfg &cur_cfg, c_data &cur_data)
 
 	int idx_lmul = get_index_lmul();
 	int idx_len = vector_cfg.len; // number of elements matches vd
-	uint64_t vs2_len =
-		std::max(vlen / sizeof(Ts2),
-			 vector_cfg.len); // number of elements matches vs2
+
+	// VLMAX for vs2: total elements in the register group
+	// vlenb is VLENB (bytes), so total_bytes = vlenb * LMUL_factor
+	uint64_t total_bytes = (vector_cfg.lmul < 4) ?
+				       (vlenb * (1 << vector_cfg.lmul)) :
+				       (vlenb / (1 << (8 - vector_cfg.lmul)));
+	uint64_t vs2_len = total_bytes / sizeof(Ts2);
 
 	if (random_mode) {
 		cur_data.register_type_with_random<uint16_t>("vs1", idx_len);
 		cur_data.register_type_with_random<Ts2>("vs2", vs2_len);
 		cur_data.register_type_with_random<Td>("vd", vector_cfg.len);
 		if (!cur_data.map_reg_index["vm"])
-			cur_data.register_type_with_random<uint8_t>("vm", vlen);
+			cur_data.register_type_with_random<uint8_t>("vm",
+								    vlenb);
 		cur_data.set_value_to_cfg(cur_cfg);
 		cur_cfg.DESC = cur_data.get_DESC_from_inst(vop_inst_fields,
 							   vector_cfg.inst);
@@ -165,18 +176,19 @@ int per_run(int it, c_cfg &cur_cfg, c_data &cur_data)
 	std::vector<uint32_t> insts;
 
 	save_context(insts);
+	vzero_all(insts);
 
 	load_multi_vector<Td, uint16_t, Ts2, uint8_t>(
 		insts, cur_data, { "vd", "vs1", "vs2", "vm" },
 		{ vector_cfg.lmul, (uint64_t)idx_lmul, vector_cfg.lmul,
 		  lmul_m1 },
-		{ vector_cfg.len, (uint64_t)idx_len, vs2_len, vlen });
+		{ vector_cfg.len, (uint64_t)idx_len, vs2_len, vlenb });
 
 	store_multi_preinst_vector<Td, uint16_t, Ts2, uint8_t>(
 		insts, cur_data, { "vd", "vs1", "vs2", "vm" },
 		{ vector_cfg.lmul, (uint64_t)idx_lmul, vector_cfg.lmul,
 		  lmul_m1 },
-		{ vector_cfg.len, (uint64_t)idx_len, vs2_len, vlen });
+		{ vector_cfg.len, (uint64_t)idx_len, vs2_len, vlenb });
 
 	vsetvli_lmul_sew(insts, vector_cfg.lmul, vector_cfg.sew,
 			 vector_cfg.len);
@@ -199,7 +211,7 @@ int per_run(int it, c_cfg &cur_cfg, c_data &cur_data)
 
 	save_multi_preinst_value_to_common<Td, uint16_t, Ts2, uint8_t>(
 		cur_data, { "vd", "vs1", "vs2", "vm" },
-		{ vector_cfg.len, (uint64_t)idx_len, vs2_len, vlen });
+		{ vector_cfg.len, (uint64_t)idx_len, vs2_len, vlenb });
 
 	run_self_result<Ts2, Td>(cur_data);
 

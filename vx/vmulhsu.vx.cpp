@@ -44,7 +44,6 @@ int run_self_result(c_data &cur_data)
 	int rs1 = cur_data.map_reg_index["rs1"];
 	int vd = cur_data.map_reg_index["vd"];
 	int SEW = sizeof(Ts2) * 8;
-	int vlmax = vlen / sizeof(Td);
 
 	Ts2 *vs2_data = static_cast<Ts2 *>(
 		cur_data.map_preinst_typed_value["vs2"].get());
@@ -67,7 +66,7 @@ int run_self_result(c_data &cur_data)
 	for (int j = 0; j < vector_cfg.len; j++) {
 		int row = j / 8;
 		int col = j % 8;
-		int vindex = vd + (j / vlmax);
+
 		if (j < vector_cfg.vstart ||
 		    (!vm_bit && !(vm_data[row] & (1ull << col)))) {
 			continue;
@@ -111,9 +110,10 @@ int per_run(int it, c_cfg &cur_cfg, c_data &cur_data)
 	if (random_mode) {
 		cur_data.register_type_with_random<Ts2>("vs2", vector_cfg.len);
 		cur_data.register_type_with_random<Td>("vd", vector_cfg.len);
-		cur_data.register_type_with_random<Ts1>("rs1", 1);
+		cur_data.register_type_with_random<uint64_t>("rs1", 1);
 		if (cur_data.map_reg_index["vm"] == 0)
-			cur_data.register_type_with_random<uint8_t>("vm", vlen);
+			cur_data.register_type_with_random<uint8_t>("vm",
+								    vlenb);
 		cur_data.set_value_to_cfg(cur_cfg);
 		cur_cfg.DESC = cur_data.get_DESC_from_inst(vop_inst_fields,
 							   vector_cfg.inst);
@@ -129,20 +129,21 @@ int per_run(int it, c_cfg &cur_cfg, c_data &cur_data)
 	std::vector<uint32_t> insts;
 
 	save_context(insts);
+	vzero_all(insts);
 
 	load_multi_vector<Td, Ts2, uint8_t>(
 		insts, cur_data, { "vd", "vs2", "vm" },
 		{ vector_cfg.lmul, vector_cfg.lmul, lmul_m1 },
-		{ vector_cfg.len, vector_cfg.len, vlen });
+		{ vector_cfg.len, vector_cfg.len, vlenb });
 
-	load_multi_int<Ts1>(insts, cur_data, { "rs1" });
+	load_multi_int<uint64_t>(insts, cur_data, { "rs1" });
 
-	store_multi_preinst_int<Ts1>(insts, cur_data, { "rs1" });
+	store_multi_preinst_int<uint64_t>(insts, cur_data, { "rs1" });
 
 	store_multi_preinst_vector<Td, Ts2, uint8_t>(
 		insts, cur_data, { "vd", "vs2", "vm" },
 		{ vector_cfg.lmul, vector_cfg.lmul, lmul_m1 },
-		{ vector_cfg.len, vector_cfg.len, vlen });
+		{ vector_cfg.len, vector_cfg.len, vlenb });
 
 	vsetvli_lmul_sew(insts, vector_cfg.lmul, vector_cfg.sew,
 			 vector_cfg.len);
@@ -151,7 +152,7 @@ int per_run(int it, c_cfg &cur_cfg, c_data &cur_data)
 
 	insts.push_back(vector_cfg.inst);
 
-	store_multi_afterinst_int<Ts1>(insts, cur_data, { "rs1" });
+	store_multi_afterinst_int<uint64_t>(insts, cur_data, { "rs1" });
 
 	store_multi_afterinst_vector<Td>(insts, cur_data, { "vd" },
 					 { vector_cfg.lmul },
@@ -165,9 +166,9 @@ int per_run(int it, c_cfg &cur_cfg, c_data &cur_data)
 	if (has_illegal >= 0)
 		return has_illegal;
 
-	save_multi_preinst_value_to_common<Td, Ts2, uint8_t>(
+	save_multi_preinst_value_to_common<uint64_t, Td, Ts2, uint8_t>(
 		cur_data, { "rs1", "vd", "vs2", "vm" },
-		{ 1, vector_cfg.len, vector_cfg.len, vlen });
+		{ 1, vector_cfg.len, vector_cfg.len, vlenb });
 
 	run_self_result<Ts1, Ts2, Td>(cur_data);
 

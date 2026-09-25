@@ -37,7 +37,6 @@ template <typename Ts2, typename Td> int run_self_result(c_data &cur_data)
 	int vm_bit = cur_data.map_reg_index["vm"];
 	int vd = cur_data.map_reg_index["vd"];
 	int SEW = sizeof(Ts2) * 8;
-	int vlmax = vlen / sizeof(Td);
 
 	Ts2 *vs2_data = static_cast<Ts2 *>(
 		cur_data.map_preinst_typed_value["vs2"].get());
@@ -47,8 +46,8 @@ template <typename Ts2, typename Td> int run_self_result(c_data &cur_data)
 
 	// Calculate VLMAX
 	uint64_t total_bytes = (vector_cfg.lmul < 4) ?
-				       (vlen * (1 << vector_cfg.lmul)) :
-				       (vlen / (1 << (8 - vector_cfg.lmul)));
+				       (vlenb * (1 << vector_cfg.lmul)) :
+				       (vlenb / (1 << (8 - vector_cfg.lmul)));
 	uint64_t VLMAX = total_bytes / (1 << vector_cfg.sew);
 
 	uint8_t *vm_data = nullptr;
@@ -96,15 +95,16 @@ int per_run(int it, c_cfg &cur_cfg, c_data &cur_data)
 
 	// Calculate VLMAX
 	uint64_t total_bytes = (vector_cfg.lmul < 4) ?
-				       (vlen * (1 << vector_cfg.lmul)) :
-				       (vlen / (1 << (8 - vector_cfg.lmul)));
-	uint64_t vlmax_count = total_bytes / (1 << vector_cfg.sew);
+				       (vlenb * (1 << vector_cfg.lmul)) :
+				       (vlenb / (1 << (8 - vector_cfg.lmul)));
+	uint64_t vlmax = total_bytes / (1 << vector_cfg.sew);
 
 	if (random_mode) {
-		cur_data.register_type_with_random<Ts2>("vs2", vlmax_count);
+		cur_data.register_type_with_random<Ts2>("vs2", vlmax);
 		cur_data.register_type_with_random<Td>("vd", vector_cfg.len);
 		if (!cur_data.map_reg_index["vm"]) {
-			cur_data.register_type_with_random<uint8_t>("vm", vlen);
+			cur_data.register_type_with_random<uint8_t>("vm",
+								    vlenb);
 		}
 
 		cur_data.set_value_to_cfg(cur_cfg);
@@ -122,16 +122,17 @@ int per_run(int it, c_cfg &cur_cfg, c_data &cur_data)
 	std::vector<uint32_t> insts;
 
 	save_context(insts);
+	vzero_all(insts);
 
 	load_multi_vector<Td, Ts2, uint8_t>(
 		insts, cur_data, { "vd", "vs2", "vm" },
 		{ vector_cfg.lmul, vector_cfg.lmul, lmul_m1 },
-		{ vector_cfg.len, vlmax_count, vlen });
+		{ vector_cfg.len, vlmax, vlenb });
 
 	store_multi_preinst_vector<Td, Ts2, uint8_t>(
 		insts, cur_data, { "vd", "vs2", "vm" },
 		{ vector_cfg.lmul, vector_cfg.lmul, lmul_m1 },
-		{ vector_cfg.len, vlmax_count, vlen });
+		{ vector_cfg.len, vlmax, vlenb });
 
 	vsetvli_lmul_sew(insts, vector_cfg.lmul, vector_cfg.sew,
 			 vector_cfg.len);
@@ -154,7 +155,7 @@ int per_run(int it, c_cfg &cur_cfg, c_data &cur_data)
 
 	save_multi_preinst_value_to_common<Td, Ts2, uint8_t>(
 		cur_data, { "vd", "vs2", "vm" },
-		{ vector_cfg.len, vlmax_count, vlen });
+		{ vector_cfg.len, vlmax, vlenb });
 
 	run_self_result<Ts2, Td>(cur_data);
 

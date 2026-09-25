@@ -1,3 +1,9 @@
 .aone_copilot/*
 *.elf
 *.bin
+*.baremetal*.*
+*.data
+__pycache__
+*.rvvi
+*.trace
+*.log

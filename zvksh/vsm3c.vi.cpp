@@ -64,9 +64,8 @@ template <typename Td> int run_self_result(c_data &cur_data)
 		uint32_t x1 = w1 ^ w5;
 
 		uint32_t j = 2 * rnds;
-		uint32_t ss1 = crypto_rol32(crypto_rol32(a, 12) + e +
-						    crypto_rol32(sm3_t(j), j),
-					    7);
+		uint32_t ss1 = crypto_rol32(
+			crypto_rol32(a, 12) + e + crypto_rol32(sm3_t(j), j), 7);
 		uint32_t ss2 = ss1 ^ crypto_rol32(a, 12);
 		uint32_t tt1 = sm3_ff(a, b, c, j) + d + ss2 + x0;
 		uint32_t tt2 = sm3_gg(e, f, g, j) + h + ss1 + w0;
@@ -110,10 +109,9 @@ int main(int argc, char *argv[])
 		c_data cur_data;
 		init_vector_cfg(it, cur_cfg, cur_data, check_illegal,
 				vop_inst_fields);
-		int has_error =
-			crypto_per_run_vd_vs2<uint32_t>(
-				it, cur_cfg, cur_data, vop_inst_fields,
-				check_illegal, run_self_result<uint32_t>);
+		int has_error = crypto_per_run_vd_vs2<uint32_t>(
+			it, cur_cfg, cur_data, vop_inst_fields, check_illegal,
+			run_self_result<uint32_t>);
 		crypto_report_error(cur_cfg, has_error);
 		print_runtime_iteration_end();
 		if (has_error && early_stop)

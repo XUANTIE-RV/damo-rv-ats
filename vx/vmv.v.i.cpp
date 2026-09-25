@@ -30,7 +30,6 @@ template <typename Td> int run_self_result(c_data &cur_data)
 {
 	int vd = cur_data.map_reg_index["vd"];
 	int SEW = sizeof(Td) * 8;
-	int vlmax = vlen / sizeof(Td);
 
 	int64_t raw_imm = cur_data.map_reg_index["imm"];
 	int64_t imm = sign_extend(raw_imm, 5);
@@ -73,6 +72,7 @@ template <typename Td> int per_run(int it, c_cfg &cur_cfg, c_data &cur_data)
 	std::vector<uint32_t> insts;
 
 	save_context(insts);
+	vzero_all(insts);
 
 	load_multi_vector<Td>(insts, cur_data, { "vd" }, { vector_cfg.lmul },
 			      { vector_cfg.len });

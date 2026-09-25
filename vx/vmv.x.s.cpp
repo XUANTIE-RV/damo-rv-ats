@@ -86,6 +86,7 @@ template <typename Ts2> int per_run(int it, c_cfg &cur_cfg, c_data &cur_data)
 	std::vector<uint32_t> insts;
 
 	save_context(insts);
+	vzero_all(insts);
 
 	load_multi_vector<Ts2>(insts, cur_data, { "vs2" }, { vector_cfg.lmul },
 			       { vector_cfg.len });

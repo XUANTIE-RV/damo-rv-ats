@@ -7,6 +7,7 @@
 #define __v_common__
 
 #include "framework.h"
+#include "f_common.h"
 
 #define OPIVV 0x0
 #define OPFVV 0x1
@@ -27,7 +28,7 @@
 #define CSR_VTYPE 0xC21
 #define CSR_VLENB 0xC22
 
-uint64_t vlen = 0;
+uint64_t vlenb = 0; // Vector Length in Bytes
 
 #define lmul_m1 0
 #define lmul_m2 1
@@ -246,20 +247,20 @@ struct c_vector_cfg {
 		sew = get_rand_bound<int>(0, 3);
 		lmul = get_rand_bound<int>(0, 7);
 
-		int total_bits = (lmul < 4) ? (vlen * (1 << lmul)) :
-					      (vlen / (1 << (8 - lmul)));
+		int total_bits = (lmul < 4) ? (vlenb * (1 << lmul)) :
+					      (vlenb / (1 << (8 - lmul)));
 		while (lmul == 4 || total_bits < (1 << sew) ||
 		       (lmul > 4 && (8 >> (8 - lmul) < (1 << sew)))) {
 			lmul = get_rand_bound<int>(0, 7);
-			total_bits = (lmul < 4) ? (vlen * (1 << lmul)) :
-						  (vlen / (1 << (8 - lmul)));
+			total_bits = (lmul < 4) ? (vlenb * (1 << lmul)) :
+						  (vlenb / (1 << (8 - lmul)));
 		}
 		vma = 0;
 		vta = 0;
 		vxsat = 0;
 		vxrm = get_rand_bound<int>(0, 3);
 
-		len = get_rand_bound<int>(1, (total_bits / (1 << sew)));
+		len = get_rand_bound<int>(0, (total_bits / (1 << sew)));
 		// vstart fixed to 0
 		// vstart = get_rand_bound<int>(0,len-1);
 		vstart = 0;
@@ -291,7 +292,8 @@ struct c_vector_cfg {
 	void print()
 	{
 		INFO << "Print c_vector_cfg... " << std::endl;
-		// INFO << "  vlenb = 0x" << std::hex << csr_vlenb << std::dec <<" ("<< csr_vlenb <<") "<< std::endl;
+		INFO << "vlenb = 0x" << std::hex << vlenb << std::dec << " ("
+		     << vlenb << ") " << std::endl;
 		INFO << "vstart= 0x" << std::hex << vstart << std::dec << " ("
 		     << vstart << ") " << std::endl;
 		INFO << "vl    = 0x" << std::hex << len << std::dec << " ("
@@ -314,8 +316,7 @@ struct c_vector_cfg {
 c_flag vector_flag;
 c_vector_cfg vector_cfg;
 uint64_t vl_placeholder[10000];
-void *addr_placeholder[10000];
-int vl_top = 0, addr_top = 0;
+int vl_top = 0;
 std::vector<void *> allocated_buffers;
 
 /* Initialize the vector test environment: read VLENB CSR to get the vector
@@ -323,7 +324,7 @@ std::vector<void *> allocated_buffers;
 void init_vector_program()
 {
 	INFO << "init vector ... \n";
-	vlen = CSRR(CSR_VLENB);
+	vlenb = CSRR(CSR_VLENB);
 	if (global_flag_ptr == nullptr)
 		global_flag_ptr = new c_flag();
 	*global_flag_ptr = vector_flag;
@@ -362,6 +363,15 @@ void init_vector_cfg(int it, c_cfg &cur_cfg, c_data &cur_data,
 
 	INFO << "CSR: " << c_cfg::to_json(cur_cfg).at("CSR") << std::endl;
 	vector_cfg.print();
+
+	/* Begin baremetal iteration recording */
+	if (global_baremetal_gen.is_enabled()) {
+		global_baremetal_gen.begin_iteration(it);
+		global_baremetal_gen.record_vector_config(
+			vector_cfg.lmul, vector_cfg.sew, vector_cfg.len,
+			vector_cfg.vstart, vector_cfg.vxrm, vector_cfg.vma,
+			vector_cfg.vta);
+	}
 }
 
 /* Reset the placeholder buffer indices for VL, immediate values, and addresses. */
@@ -370,6 +380,29 @@ void reset_data()
 	vl_top = 0;
 	val_top = 0;
 	addr_top = 0;
+}
+
+/* Load a memory address into a GPR for use by the target instruction (e.g. rs1
+ * for load/store instructions). Also records the memory operand for baremetal
+ * generation so the data buffer is embedded in the baremetal binary.
+ * @param mem_size: size in bytes of the memory buffer pointed to by mem_ptr.
+ *   Pass 0 if unknown or not applicable (e.g. store instructions). */
+void load_addr_to_gpr(std::vector<uint32_t> &insts, void *mem_ptr, int gpr,
+		      size_t mem_size = 0)
+{
+	addr_placeholder[addr_top++] = mem_ptr;
+	uintptr_t data_ptr = (uintptr_t)(&(addr_placeholder[addr_top - 1]));
+	load_reg(insts, data_ptr, gpr);
+
+	if (global_baremetal_gen.is_enabled()) {
+		/* For store instructions, mem_size may be 0 due to missing
+		 * "mem_data" key in some .cpp files. Use a safe default
+		 * (VLEN*8 bytes = 128 bytes) to ensure the mem_op is recorded
+		 * so that rs1 gets set in baremetal. */
+		size_t effective_size = mem_size > 0 ? mem_size : 128;
+		global_baremetal_gen.record_mem_operand(gpr, mem_ptr,
+							effective_size);
+	}
 }
 
 //vsetvli
@@ -383,24 +416,59 @@ void vsetvli_lmul_sew(std::vector<uint32_t> &insts, int lmul, int sew, int vl,
 {
 	uint32_t vtypei = (vma << 7) + (vta << 6) + (sew << 3) + lmul;
 	vl_placeholder[vl_top++] = vl;
-	uint64_t ptr = (uint64_t)(&(vl_placeholder[vl_top - 1]));
+	uintptr_t ptr = (uintptr_t)(&(vl_placeholder[vl_top - 1]));
 	load_reg(insts, ptr, 28);
 	uint32_t inst = (vtypei << 20) + (28 << 15) + ((0b111) << 12) +
 			(28 << 7) + (0b1010111);
 	insts.push_back(inst);
 }
 
+void vmv_v_i(std::vector<uint32_t> &insts, uint32_t imm, uint32_t vd)
+{
+	// vmv.v.i vd, imm
+	// [31:26]=010111 [25]=1 [24:20]=00000 [19:15]=imm [14:12]=011 [11:7]=vd [6:0]=1010111
+	uint32_t inst = (0b010111 << 26) | (1 << 25) | (imm << 15) |
+			(0b011 << 12) | (vd << 7) | 0b1010111;
+	insts.push_back(inst);
+}
+
+void vzero_all(std::vector<uint32_t> &insts)
+{
+	vsetvli_lmul_sew(insts, lmul_m1, sew_e8, vlenb);
+	for (int i = 0; i < 32; i++)
+		vmv_v_i(insts, 0, i);
+}
+
 /* Generate a vector unit-stride load instruction (vle8/16/32/64) to load
  * 'vl' elements from memory address 'addr' into vector register 'vd'.
  * Automatically computes EEW and width encoding from sizeof(T).
- * Sets vsetvli with the given lmul before the load. nf=0, vm=1 (unmasked). */
+ * Sets vsetvli with the given lmul before the load. nf=0, vm=1 (unmasked).
+ *
+ * The vd field in the encoded instruction occupies bits [11:7] (5 bits, max 31).
+ * If vd >= 32, the high bits would spill into the width field [14:12] and
+ * produce a malformed vle/vse encoding, leading to undefined QEMU behavior
+ * and heap corruption. Guard against this here so callers don't have to. */
 template <typename T>
 void load_vector(std::vector<uint32_t> &insts, uint32_t vd, void *addr,
 		 int lmul, int vl)
 {
+	if (vd >= 32) {
+		ERROR << "load_vector: vd=" << vd
+		      << " out of 5-bit range, skipping instruction emit"
+		      << std::endl;
+		return;
+	}
 	uint32_t eew = 0;
 	for (int tmp = sizeof(T); tmp != 1; tmp = tmp / 2, eew++)
 		;
+
+	/* Record for baremetal generation */
+	if (global_baremetal_gen.is_enabled()) {
+		size_t data_bytes = vl * sizeof(T);
+		global_baremetal_gen.record_vector_load(vd, sizeof(T), lmul, vl,
+							addr, data_bytes);
+	}
+
 	vsetvli_lmul_sew(insts, lmul, eew, vl);
 
 	uint32_t width = eew;
@@ -408,7 +476,7 @@ void load_vector(std::vector<uint32_t> &insts, uint32_t vd, void *addr,
 		width = 4 + eew;
 	}
 	addr_placeholder[addr_top++] = addr;
-	uint64_t ptr = (uint64_t)(&(addr_placeholder[addr_top - 1]));
+	uintptr_t ptr = (uintptr_t)(&(addr_placeholder[addr_top - 1]));
 	load_reg(insts, ptr, 28);
 	uint32_t inst = (1 << 25) + (28 << 15) + (width << 12) + (vd << 7) +
 			(0b0000111);
@@ -434,10 +502,35 @@ void load_single_vector(std::vector<uint32_t> &insts, c_data &cur_data,
 	}
 
 	int vd = cur_data.map_reg_index[reg_name];
+
+	// When vl=0, ensure at least 1 element so load_vector has a valid
+	// buffer.  Instructions like vmv.x.s / vcpop.m still read vs2[0]
+	// even when vl=0, and vzero_all has already cleared the register
+	// file, so loading a single zero element is both safe and correct.
+	if (cur_data.map_reg_value[reg_name].empty()) {
+		cur_data.map_reg_value[reg_name].push_back(0);
+	}
+	uint64_t effective_vl = (vl == 0) ? 1 : vl;
+
 	cur_data.map_reg_typed_value[reg_name] = c_data::process_from_common<T>(
 		cur_data.map_reg_value[reg_name]);
 	void *data = cur_data.map_reg_typed_value[reg_name].get();
-	load_vector<T>(insts, vd, data, lmul, vl);
+
+	if constexpr (!std::is_fundamental_v<T>) {
+		std::string storage_reg_name = "storage_" + reg_name;
+		size_t elem_bits =
+			fp_traits<typename T::value_type>::total_bits;
+		size_t total_bytes = (elem_bits * effective_vl + 7) / 8;
+
+		SafeVoidPtr storage_ptr =
+			compact_pack_to_storage<T>(data, effective_vl);
+
+		cur_data.map_reg_typed_value[storage_reg_name] = storage_ptr;
+		load_vector<uint8_t>(insts, vd, storage_ptr.get(), lmul,
+				     total_bytes);
+	} else {
+		load_vector<T>(insts, vd, data, lmul, effective_vl);
+	}
 }
 
 /* Recursively load multiple vector registers from test data. Each type in the
@@ -470,11 +563,20 @@ void load_multi_vector(std::vector<uint32_t> &insts, c_data &cur_data,
 /* Generate a vector unit-stride store instruction (vse8/16/32/64) to store
  * 'vl' elements from vector register 'vd' to memory address 'addr'.
  * Automatically computes EEW and width encoding from sizeof(T).
- * Sets vsetvli with the given lmul before the store. */
+ * Sets vsetvli with the given lmul before the store.
+ *
+ * Same vd >= 32 guard as load_vector: an out-of-range vd would corrupt the
+ * width field in the encoding and trigger undefined QEMU behavior. */
 template <typename T>
 void store_vector(std::vector<uint32_t> &insts, uint32_t vd, void *addr,
 		  int lmul, int vl)
 {
+	if (vd >= 32) {
+		ERROR << "store_vector: vd=" << vd
+		      << " out of 5-bit range, skipping instruction emit"
+		      << std::endl;
+		return;
+	}
 	uint32_t eew = 0;
 	for (int tmp = sizeof(T); tmp != 1; tmp = tmp / 2, eew++)
 		;
@@ -485,7 +587,7 @@ void store_vector(std::vector<uint32_t> &insts, uint32_t vd, void *addr,
 		width = 4 + eew;
 	}
 	addr_placeholder[addr_top++] = addr;
-	uint64_t ptr = (uint64_t)(&(addr_placeholder[addr_top - 1]));
+	uintptr_t ptr = (uintptr_t)(&(addr_placeholder[addr_top - 1]));
 	load_reg(insts, ptr, 28);
 	uint32_t inst = (1 << 25) + (28 << 15) + (width << 12) + (vd << 7) +
 			(0b0100111);
@@ -513,9 +615,31 @@ void store_single_preinst_vector(std::vector<uint32_t> &insts, c_data &cur_data,
 	}
 
 	int vd = cur_data.map_reg_index[reg_name];
-	cur_data.map_preinst_typed_value[reg_name] = make_zero_buffer<T>(vl);
+
+	// When vl=0, use effective_vl=1 to capture at least element 0.
+	// Instructions like vmv.x.s / vcpop.m still read vs2[0] at vl=0,
+	// so the selfcheck model needs the pre-instruction value.
+	uint64_t effective_vl = (vl == 0) ? 1 : vl;
+
+	cur_data.map_preinst_typed_value[reg_name] =
+		make_zero_buffer<T>(effective_vl);
 	void *data = cur_data.map_preinst_typed_value[reg_name].get();
-	store_vector<T>(insts, vd, data, lmul, vl);
+
+	if constexpr (!std::is_fundamental_v<T>) {
+		std::string storage_reg_name = "storage_" + reg_name;
+		size_t elem_bits =
+			fp_traits<typename T::value_type>::total_bits;
+		size_t total_bytes = (elem_bits * effective_vl + 7) / 8;
+
+		cur_data.map_preinst_typed_value[storage_reg_name] =
+			make_zero_buffer<uint8_t>(total_bytes);
+		void *storage_data =
+			cur_data.map_preinst_typed_value[storage_reg_name].get();
+		store_vector<uint8_t>(insts, vd, storage_data, lmul,
+				      total_bytes);
+	} else {
+		store_vector<T>(insts, vd, data, lmul, effective_vl);
+	}
 }
 
 /* Recursively save multiple vector registers' pre-instruction values. */
@@ -567,9 +691,32 @@ void store_single_afterinst_vector(std::vector<uint32_t> &insts,
 	}
 
 	int vd = cur_data.map_reg_index[reg_name];
-	cur_data.map_afterinst_typed_value[reg_name] = make_zero_buffer<T>(vl);
+
+	// When vl=0, use effective_vl=1 to capture at least element 0.
+	// This mirrors the load_single_vector / store_single_preinst_vector
+	// logic so the afterinst buffer is sized consistently.
+	uint64_t effective_vl = (vl == 0) ? 1 : vl;
+
+	cur_data.map_afterinst_typed_value[reg_name] =
+		make_zero_buffer<T>(effective_vl);
 	void *data = cur_data.map_afterinst_typed_value[reg_name].get();
-	store_vector<T>(insts, vd, data, lmul, vl);
+
+	if constexpr (!std::is_fundamental_v<T>) {
+		std::string storage_reg_name = "storage_" + reg_name;
+		size_t elem_bits =
+			fp_traits<typename T::value_type>::total_bits;
+		size_t total_bytes = (elem_bits * effective_vl + 7) / 8;
+
+		cur_data.map_afterinst_typed_value[storage_reg_name] =
+			make_zero_buffer<uint8_t>(total_bytes);
+		void *storage_data =
+			cur_data.map_afterinst_typed_value[storage_reg_name]
+				.get();
+		store_vector<uint8_t>(insts, vd, storage_data, lmul,
+				      total_bytes);
+	} else {
+		store_vector<T>(insts, vd, data, lmul, effective_vl);
+	}
 }
 
 /* Recursively save multiple vector registers' post-instruction values. */
@@ -600,6 +747,77 @@ void store_multi_afterinst_vector(std::vector<uint32_t> &insts,
 	}
 }
 
+/* After run_instruction() completes, unpack a single register's compact bit-packed
+ * storage buffer back into its typed c_check_f[] array for both the pre-instruction
+ * snapshot and the post-instruction result. Only active for non-fundamental types
+ * (i.e. c_check_f<T,U>); fundamental types (uint8_t, float, etc.) are no-ops
+ * because they were stored directly without bit-packing. */
+template <typename T>
+void unpack_single_after_run(c_data &cur_data, const std::string &reg_name,
+			     uint64_t vl)
+{
+	if constexpr (!std::is_fundamental_v<T>) {
+		std::string storage_reg_name = "storage_" + reg_name;
+
+		// Unpack preinst snapshot: storage_xxx → typed vd/vs1/vs2 buffer
+		auto preinst_storage_it =
+			cur_data.map_preinst_typed_value.find(storage_reg_name);
+		auto preinst_typed_it =
+			cur_data.map_preinst_typed_value.find(reg_name);
+		if (preinst_storage_it !=
+			    cur_data.map_preinst_typed_value.end() &&
+		    preinst_typed_it !=
+			    cur_data.map_preinst_typed_value.end()) {
+			compact_unpack_from_storage<T>(
+				preinst_storage_it->second.get(), vl,
+				preinst_typed_it->second.get());
+			INFO << "Unpacked preinst storage for " << reg_name
+			     << " (" << vl << " elements)\n";
+		}
+
+		// Unpack afterinst result: storage_xxx → typed vd buffer
+		auto afterinst_storage_it =
+			cur_data.map_afterinst_typed_value.find(
+				storage_reg_name);
+		auto afterinst_typed_it =
+			cur_data.map_afterinst_typed_value.find(reg_name);
+		if (afterinst_storage_it !=
+			    cur_data.map_afterinst_typed_value.end() &&
+		    afterinst_typed_it !=
+			    cur_data.map_afterinst_typed_value.end()) {
+			compact_unpack_from_storage<T>(
+				afterinst_storage_it->second.get(), vl,
+				afterinst_typed_it->second.get());
+			INFO << "Unpacked afterinst storage for " << reg_name
+			     << " (" << vl << " elements)\n";
+		}
+	}
+}
+
+/* Recursively unpack multiple registers' storage buffers after run_instruction().
+ * Each type in the template parameter pack corresponds to one register. */
+template <typename T, typename... Rest>
+void unpack_multi_after_run(c_data &cur_data,
+			    std::vector<std::string> reg_names,
+			    std::vector<uint64_t> vls)
+{
+	if (reg_names.size() != vls.size()) {
+		throw std::runtime_error(
+			"unpack_multi_after_run: reg_names.size() != vls.size()");
+	}
+
+	unpack_single_after_run<T>(cur_data, reg_names[0], vls[0]);
+
+	auto reg_names_rest = std::vector<std::string>(reg_names.begin() + 1,
+						       reg_names.end());
+	auto vls_rest = std::vector<uint64_t>(vls.begin() + 1, vls.end());
+
+	if constexpr (sizeof...(Rest) > 0) {
+		unpack_multi_after_run<Rest...>(cur_data, reg_names_rest,
+						vls_rest);
+	}
+}
+
 /* Check the post-instruction illegal status. If the instruction was expected
  * to be illegal, verify that SIGILL was raised and reset data. If an unexpected
  * illegal signal occurred, log the error. Returns: 0 = handled illegal,
@@ -607,6 +825,12 @@ void store_multi_afterinst_vector(std::vector<uint32_t> &insts,
 int check_afterinst_illegal()
 {
 	if (global_flag_ptr->illegal) {
+		/* Record illegal instruction for baremetal (will be skipped) */
+		if (global_baremetal_gen.is_enabled()) {
+			global_baremetal_gen.record_target_inst(vector_cfg.inst,
+								true);
+			global_baremetal_gen.end_iteration();
+		}
 		check_if_sigill();
 		reset_data();
 		if (global_flag_ptr->check_illegal_error) {
@@ -617,11 +841,26 @@ int check_afterinst_illegal()
 		}
 		return 0;
 	} else if (global_flag_ptr->check_illegal_error) {
+		/* Record as illegal for baremetal */
+		if (global_baremetal_gen.is_enabled()) {
+			global_baremetal_gen.record_target_inst(vector_cfg.inst,
+								true);
+			global_baremetal_gen.end_iteration();
+		}
 		ERROR << vector_cfg << std::endl;
 		global_flag_ptr->check_illegal_error = 0;
 		if (early_stop)
 			return 1;
 		return 0;
+	}
+
+	/* Legal instruction: record target inst and end iteration for baremetal.
+	 * Expected results are recorded later in check_single_error() via
+	 * append_expected_to_last(), which works for all test types (vx/vf/vls/
+	 * crypto) without modifying any .cpp test files. */
+	if (global_baremetal_gen.is_enabled()) {
+		global_baremetal_gen.record_target_inst(vector_cfg.inst, false);
+		global_baremetal_gen.end_iteration();
 	}
 	return -1;
 }
@@ -1004,7 +1243,7 @@ class VectorRegValidator {
 		if (vector_cfg.lmul == 4 || vector_cfg.sew >= 4)
 			return false;
 		if (vector_cfg.lmul > 4 &&
-		    (((vlen * 8) >> (8 - vector_cfg.lmul)) <
+		    (((vlenb * 8) >> (8 - vector_cfg.lmul)) <
 		     (8 << vector_cfg.sew)))
 			return false;
 		if (vector_cfg.lmul > 4 &&

@@ -28,9 +28,9 @@ int check_illegal(c_data &cur_data)
 		config);
 	ValidationConfig vs1_config = { .check_align = true,
 					.check_overlap = false };
-	int vs1_ok = VectorRegValidator::validate(
-		std::optional<VregOperand>(), { VregOperand::one_pow(vs1) }, 1,
-		vs1_config);
+	int vs1_ok = VectorRegValidator::validate(std::optional<VregOperand>(),
+						  { VregOperand::one_pow(vs1) },
+						  1, vs1_config);
 	int illegal = !base_ok || !vs1_ok || vector_cfg.sew != sew_e32 ||
 		      !crypto_check_egs(8) || !crypto_lmul_egw_ok(256);
 	print_illegal_status(illegal);
@@ -88,12 +88,9 @@ int main(int argc, char *argv[])
 		c_data cur_data;
 		init_vector_cfg(it, cur_cfg, cur_data, check_illegal,
 				vop_inst_fields);
-		int has_error =
-			crypto_per_run_vd_vs2_vs1<uint32_t>(it, cur_cfg,
-							    cur_data,
-							    vop_inst_fields,
-							    check_illegal,
-							    run_self_result<uint32_t>);
+		int has_error = crypto_per_run_vd_vs2_vs1<uint32_t>(
+			it, cur_cfg, cur_data, vop_inst_fields, check_illegal,
+			run_self_result<uint32_t>);
 		crypto_report_error(cur_cfg, has_error);
 		print_runtime_iteration_end();
 		if (has_error && early_stop)

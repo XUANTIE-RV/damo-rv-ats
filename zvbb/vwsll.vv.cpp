@@ -41,7 +41,6 @@ int run_self_result(c_data &cur_data)
 	int vs1 = cur_data.map_reg_index["vs1"];
 	int vd = cur_data.map_reg_index["vd"];
 	int SEW = sizeof(Ts2) * 8;
-	int vlmax = vlen / sizeof(Td);
 
 	Ts1 *vs1_data = static_cast<Ts1 *>(
 		cur_data.map_preinst_typed_value["vs1"].get());
@@ -85,7 +84,8 @@ int per_run(int it, c_cfg &cur_cfg, c_data &cur_data)
 		cur_data.register_type_with_random<Ts2>("vs2", vector_cfg.len);
 		cur_data.register_type_with_random<Td>("vd", vector_cfg.len);
 		if (!cur_data.map_reg_index["vm"])
-			cur_data.register_type_with_random<uint8_t>("vm", vlen);
+			cur_data.register_type_with_random<uint8_t>("vm",
+								    vlenb);
 		cur_data.set_value_to_cfg(cur_cfg);
 		cur_cfg.DESC = cur_data.get_DESC_from_inst(vop_inst_fields,
 							   vector_cfg.inst);
@@ -101,18 +101,19 @@ int per_run(int it, c_cfg &cur_cfg, c_data &cur_data)
 	std::vector<uint32_t> insts;
 
 	save_context(insts);
+	vzero_all(insts);
 
 	load_multi_vector<Td, Ts1, Ts2, uint8_t>(
 		insts, cur_data, { "vd", "vs1", "vs2", "vm" },
 		{ lmul_pow(vector_cfg.lmul, 1), vector_cfg.lmul,
 		  vector_cfg.lmul, lmul_m1 },
-		{ vector_cfg.len, vector_cfg.len, vector_cfg.len, vlen });
+		{ vector_cfg.len, vector_cfg.len, vector_cfg.len, vlenb });
 
 	store_multi_preinst_vector<Td, Ts1, Ts2, uint8_t>(
 		insts, cur_data, { "vd", "vs1", "vs2", "vm" },
 		{ lmul_pow(vector_cfg.lmul, 1), vector_cfg.lmul,
 		  vector_cfg.lmul, lmul_m1 },
-		{ vector_cfg.len, vector_cfg.len, vector_cfg.len, vlen });
+		{ vector_cfg.len, vector_cfg.len, vector_cfg.len, vlenb });
 
 	vsetvli_lmul_sew(insts, vector_cfg.lmul, vector_cfg.sew,
 			 vector_cfg.len);
@@ -135,7 +136,7 @@ int per_run(int it, c_cfg &cur_cfg, c_data &cur_data)
 
 	save_multi_preinst_value_to_common<Td, Ts1, Ts2, uint8_t>(
 		cur_data, { "vd", "vs1", "vs2", "vm" },
-		{ vector_cfg.len, vector_cfg.len, vector_cfg.len, vlen });
+		{ vector_cfg.len, vector_cfg.len, vector_cfg.len, vlenb });
 
 	run_self_result<Ts1, Ts2, Td>(cur_data);
 
